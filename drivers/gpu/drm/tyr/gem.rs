@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: GPL-2.0 or MIT
+
+use crate::driver::TyrDevice;
+use crate::driver::TyrDriver;
+use kernel::drm::gem;
+use kernel::prelude::*;
+
+/// GEM Object inner driver data
+#[pin_data]
+pub(crate) struct TyrObject {}
+
+#[vtable]
+impl gem::DriverObject for TyrObject {
+    type Driver = TyrDriver;
+    type Args = ();
+
+    fn new(_dev: &TyrDevice, _size: usize, _args: ()) -> impl PinInit<Self, Error> {
+        try_pin_init!(TyrObject {})
+    }
+}
