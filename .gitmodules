@@ -1,0 +1,3 @@
+[submodule "ubuntu-kernel"]
+	path = ubuntu-kernel
+	url = https://git.proxmox.com/git/mirror_ubuntu-kernels.git
