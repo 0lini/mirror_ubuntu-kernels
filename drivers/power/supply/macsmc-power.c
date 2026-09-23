@@ -39,8 +39,14 @@ struct macsmc_power {
 	char model_name[MAX_STRING_LENGTH];
 	char serial_number[MAX_STRING_LENGTH];
 	char mfg_date[MAX_STRING_LENGTH];
+
 	bool has_chwa;
 	bool has_chls;
+	bool has_ch0i;
+	bool has_ch0c;
+	bool has_chte;
+	bool bcf0_1byte;
+
 	u8 num_cells;
 	int nominal_voltage_mv;
 
@@ -57,8 +63,8 @@ struct macsmc_power {
 static int macsmc_log_power_set(const char *val, const struct kernel_param *kp);
 
 static const struct kernel_param_ops macsmc_log_power_ops = {
-        .set = macsmc_log_power_set,
-        .get = param_get_bool,
+	.set = macsmc_log_power_set,
+	.get = param_get_bool,
 };
 
 static bool log_power = false;
@@ -242,6 +248,7 @@ static int macsmc_battery_get_status(struct macsmc_power *power)
 	 */
 	if (power->has_chls) {
 		u16 vu16;
+
 		ret = apple_smc_read_u16(power->smc, SMC_KEY(CHLS), &vu16);
 		if (ret == sizeof(vu16) && (vu16 & 0xff) >= CHLS_MIN_END_THRESHOLD)
 			charge_limit = (vu16 & 0xff) - CHWA_CHLS_FIXED_START_OFFSET;
@@ -253,6 +260,7 @@ static int macsmc_battery_get_status(struct macsmc_power *power)
 
 	if (charge_limit > 0) {
 		u8 buic = 0;
+
 		if (apple_smc_read_u8(power->smc, SMC_KEY(BUIC), &buic) >= 0 &&
 			buic >= charge_limit)
 			limited = true;
@@ -291,55 +299,113 @@ static int macsmc_battery_get_status(struct macsmc_power *power)
 static int macsmc_battery_get_charge_behaviour(struct macsmc_power *power)
 {
 	int ret;
-	u8 val;
+	u8 val8;
+	u8 chte_buf[4];
 
-	/* CH0I returns a bitmask like the low byte of CH0R */
-	ret = apple_smc_read_u8(power->smc, SMC_KEY(CH0I), &val);
-	if (ret)
-		return ret;
-	if (val & CH0R_NOAC_CH0I)
-		return POWER_SUPPLY_CHARGE_BEHAVIOUR_FORCE_DISCHARGE;
+	if (power->has_ch0i) {
+		/* CH0I returns a bitmask like the low byte of CH0R */
+		ret = apple_smc_read_u8(power->smc, SMC_KEY(CH0I), &val8);
+		if (ret)
+			return ret;
+		if (val8 & CH0R_NOAC_CH0I)
+			return POWER_SUPPLY_CHARGE_BEHAVIOUR_FORCE_DISCHARGE;
+	}
 
-	/* CH0C returns a bitmask containing CH0B/CH0C flags */
-	ret = apple_smc_read_u8(power->smc, SMC_KEY(CH0C), &val);
-	if (ret)
-		return ret;
-	if (val & CH0X_CH0C)
-		return POWER_SUPPLY_CHARGE_BEHAVIOUR_INHIBIT_CHARGE;
-	else
-		return POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO;
+	/* Prefer CHTE available in newer firmwares */
+	if (power->has_chte) {
+		ret = apple_smc_read(power->smc, SMC_KEY(CHTE), chte_buf, 4);
+		if (ret < 0)
+			return ret;
+
+		if (chte_buf[0] == 0x01)
+			return POWER_SUPPLY_CHARGE_BEHAVIOUR_INHIBIT_CHARGE;
+
+	} else if (power->has_ch0c) {
+		/* CH0C returns a bitmask containing CH0B/CH0C flags */
+		ret = apple_smc_read_u8(power->smc, SMC_KEY(CH0C), &val8);
+		if (ret)
+			return ret;
+		if (val8 & CH0X_CH0C)
+			return POWER_SUPPLY_CHARGE_BEHAVIOUR_INHIBIT_CHARGE;
+	}
+
+	return POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO;
 }
 
 static int macsmc_battery_set_charge_behaviour(struct macsmc_power *power, int val)
 {
-	u8 ch0i, ch0c;
 	int ret;
 
 	/*
-	 * CH0I/CH0C are "hard" controls that will allow the battery to run down to 0.
+	 * apple_smc_write_u32 does weird things with endianess,
+	 * so we write raw bytes to ensure correctness of CHTE
+	 */
+	u8 chte_inhibit[4] = {0x01, 0x00, 0x00, 0x00};
+	u8 chte_auto[4]    = {0x00, 0x00, 0x00, 0x00};
+
+	/*
+	 * CH0I/CH0C/CHTE are "hard" controls that will allow the battery to run down to 0.
 	 * CH0K/CH0B are "soft" controls that are reset to 0 when SOC drops below 50%;
 	 * we don't expose these yet.
 	 */
 
 	switch (val) {
 	case POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO:
-		ch0i = ch0c = 0;
+		if (power->has_ch0i) {
+			ret = apple_smc_write_u8(power->smc, SMC_KEY(CH0I), 0);
+			if (ret)
+				return ret;
+		}
+
+		if (power->has_chte) {
+			ret = apple_smc_write(power->smc, SMC_KEY(CHTE), chte_auto, 4);
+			if (ret)
+				return ret;
+		} else if (power->has_ch0c) {
+			ret = apple_smc_write_u8(power->smc, SMC_KEY(CH0C), 0);
+			if (ret)
+				return ret;
+		}
 		break;
+
 	case POWER_SUPPLY_CHARGE_BEHAVIOUR_INHIBIT_CHARGE:
-		ch0i = 0;
-		ch0c = 1;
+		if (power->has_ch0i) {
+			ret = apple_smc_write_u8(power->smc, SMC_KEY(CH0I), 0);
+			if (ret)
+				return ret;
+		}
+
+		/* Prefer CHTE available in newer firmwares */
+		if (power->has_chte)
+			return apple_smc_write(power->smc, SMC_KEY(CHTE), chte_inhibit, 4);
+		else if (power->has_ch0c)
+			return apple_smc_write_u8(power->smc, SMC_KEY(CH0C), 1);
+		else
+			return -EINVAL;
 		break;
+
 	case POWER_SUPPLY_CHARGE_BEHAVIOUR_FORCE_DISCHARGE:
-		ch0i = 1;
-		ch0c = 0;
-		break;
+		if (!power->has_ch0i)
+			return -EINVAL;
+
+		/* Prefer CHTE available in newer firmwares */
+		if (power->has_chte) {
+			ret = apple_smc_write(power->smc, SMC_KEY(CHTE), chte_auto, 4);
+			if (ret)
+				return ret;
+		} else if (power->has_ch0c) {
+			ret = apple_smc_write_u8(power->smc, SMC_KEY(CH0C), 0);
+			if (ret)
+				return ret;
+		}
+
+		return apple_smc_write_u8(power->smc, SMC_KEY(CH0I), 1);
+
 	default:
 		return -EINVAL;
 	}
-	ret = apple_smc_write_u8(power->smc, SMC_KEY(CH0I), ch0i);
-	if (ret)
-		return ret;
-	return apple_smc_write_u8(power->smc, SMC_KEY(CH0C), ch0c);
+
+	return 0;
 }
 
 static int macsmc_battery_get_date(const char *s, int *out)
@@ -351,6 +417,18 @@ static int macsmc_battery_get_date(const char *s, int *out)
 	return 0;
 }
 
+static int macsmc_battery_read_bcf0(struct macsmc_power *power, u32 *val)
+{
+	u8 tval;
+	int ret;
+
+	if (!power->bcf0_1byte)
+		return apple_smc_read_u32(power->smc, SMC_KEY(BCF0), val);
+	ret = apple_smc_read_u8(power->smc, SMC_KEY(BCF0), &tval);
+	*val = tval;
+	return ret;
+}
+
 static int macsmc_battery_get_capacity_level(struct macsmc_power *power)
 {
 	bool flag;
@@ -358,7 +436,7 @@ static int macsmc_battery_get_capacity_level(struct macsmc_power *power)
 	int ret;
 
 	/* Check for emergency shutdown condition */
-	if (apple_smc_read_u32(power->smc, SMC_KEY(BCF0), &val) >= 0 && val)
+	if (macsmc_battery_read_bcf0(power, &val) >= 0 && val)
 		return POWER_SUPPLY_CAPACITY_LEVEL_CRITICAL;
 
 	/* Check AC status for whether we could boot in this state */
@@ -539,8 +617,7 @@ static int macsmc_battery_get_property(struct power_supply *psy,
 			val->intval = vu16 & 0xff;
 			if (val->intval < CHLS_MIN_END_THRESHOLD || val->intval >= 100)
 				val->intval = 100;
-		}
-		else if (power->has_chwa) {
+		} else if (power->has_chwa) {
 			flag = false;
 			ret = apple_smc_read_flag(power->smc, SMC_KEY(CHWA), &flag);
 			val->intval = flag ? CHWA_FIXED_END_THRESHOLD : 100;
@@ -760,7 +837,7 @@ static void macsmc_power_critical_work(struct work_struct *wrk)
 		return;
 
 	/* Check for battery empty condition */
-	ret = apple_smc_read_u32(power->smc, SMC_KEY(BCF0), &bcf0);
+	ret = macsmc_battery_read_bcf0(power, &bcf0);
 	if (ret < 0) {
 		dev_err(power->dev,
 				"Emergency notification: Failed to read battery status\n");
@@ -817,6 +894,21 @@ static int macsmc_power_event(struct notifier_block *nb, unsigned long event, vo
 		power_supply_changed(power->ac);
 
 		return NOTIFY_OK;
+	} else if ((event & 0xffff0000) == 0x71130000) {
+		u8 port_index = (event >> 8) & 0xff;
+		u8 status = event & 0xff;
+
+		if (port_index == 0xff)
+			dev_info(power->dev, "Connector event: Disconnect (status 0x%02x)\n",
+				status);
+		else
+			dev_info(power->dev, "Connector event: Port %d (status 0x%02x)\n",
+				port_index + 1, status);
+
+		power_supply_changed(power->batt);
+		power_supply_changed(power->ac);
+
+		return NOTIFY_OK;
 	} else if ((event & 0xff000000) == 0x71000000) {
 		dev_info(power->dev, "Unknown charger event 0x%lx\n", event);
 
@@ -836,10 +928,12 @@ static int macsmc_power_probe(struct platform_device *pdev)
 {
 	struct apple_smc *smc = dev_get_drvdata(pdev->dev.parent);
 	struct power_supply_config psy_cfg = {};
+	struct apple_smc_key_info info;
 	struct macsmc_power *power;
 	bool flag;
-	u32 val;
+	u8 val8;
 	u16 vu16;
+	u32 val32;
 	int ret;
 
 	power = devm_kzalloc(&pdev->dev, sizeof(*power), GFP_KERNEL);
@@ -861,9 +955,51 @@ static int macsmc_power_probe(struct platform_device *pdev)
 	apple_smc_read(smc, SMC_KEY(BMSN), power->serial_number, sizeof(power->serial_number) - 1);
 	apple_smc_read(smc, SMC_KEY(BMDT), power->mfg_date, sizeof(power->mfg_date) - 1);
 
+	if (apple_smc_read_u32(power->smc, SMC_KEY(CHTE), &val32) >= 0)
+		power->has_chte = true;
+
+	if (apple_smc_read_u8(power->smc, SMC_KEY(CH0C), &val8) >= 0)
+		power->has_ch0c = true;
+
+	if (apple_smc_read_u8(power->smc, SMC_KEY(CH0I), &val8) >= 0)
+		power->has_ch0i = true;
+
+	ret = apple_smc_get_key_info(power->smc, SMC_KEY(BCF0), &info);
+	/* failing to read this can cause spurious emergency shutdowns, so refuse to probe */
+	if (ret) {
+		dev_err(&pdev->dev, "Failed to determine BCF0 key size\n");
+		return ret;
+	}
+	if (info.size == 1)
+		power->bcf0_1byte = true;
+	else if (info.size == 4)
+		power->bcf0_1byte = false;
+	else {
+		dev_err(&pdev->dev, "Unexpected BCF0 key size %d\n", info.size);
+		return -EIO;
+	}
+
 	/* Turn off the "optimized battery charging" flags, in case macOS left them on */
+	if (power->has_chte)
+		apple_smc_write_u32(power->smc, SMC_KEY(CHTE), 0);
+	else if (power->has_ch0c)
+		apple_smc_write_u8(power->smc, SMC_KEY(CH0C), 0);
+
+	if (power->has_ch0i)
+		apple_smc_write_u8(power->smc, SMC_KEY(CH0I), 0);
+
 	apple_smc_write_u8(power->smc, SMC_KEY(CH0K), 0);
 	apple_smc_write_u8(power->smc, SMC_KEY(CH0B), 0);
+
+	power->batt_desc.charge_behaviours = BIT(POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO);
+
+	/* Newer firmwares do not have force discharge, so check if it's supported */
+	if (power->has_ch0i)
+		power->batt_desc.charge_behaviours |= BIT(POWER_SUPPLY_CHARGE_BEHAVIOUR_FORCE_DISCHARGE);
+
+	/* Older firmware uses CH0C, and newer firmware uses CHTE, so check if at least one is present*/
+	if (power->has_chte || power->has_ch0c)
+		power->batt_desc.charge_behaviours |= BIT(POWER_SUPPLY_CHARGE_BEHAVIOUR_INHIBIT_CHARGE);
 
 	/*
 	 * Prefer CHWA as the SMC firmware from iBoot-10151.1.1 is not compatible with
@@ -882,7 +1018,7 @@ static int macsmc_power_probe(struct platform_device *pdev)
 	power->nominal_voltage_mv = MACSMC_NOMINAL_CELL_VOLTAGE_MV * power->num_cells;
 
 	/* Doing one read of this flag enables critical shutdown notifications */
-	apple_smc_read_u32(power->smc, SMC_KEY(BCF0), &val);
+	macsmc_battery_read_bcf0(power, &val32);
 
 	psy_cfg.drv_data = power;
 	power->batt = devm_power_supply_register(&pdev->dev, &power->batt_desc, &psy_cfg);

@@ -5,14 +5,18 @@
 //!
 //! Copyright (C) The Asahi Linux Contributors
 
-use core::{arch::asm, mem, ptr, slice};
+use core::{arch::asm, cmp, mem, ptr, slice};
 
 use kernel::{
     bindings, c_str, device,
     device::Core,
     dma::{CoherentAllocation, Device, DmaMask},
     error::from_err_ptr,
-    io::mem::IoMem,
+    io::{
+        mem::IoMem,
+        Io, //
+    },
+    iosys_map::IoSysMapRef,
     module_platform_driver, new_condvar, new_mutex, of, platform,
     prelude::*,
     soc::apple::aop::{from_fourcc, EPICService, FakehidListener, AOP},
@@ -22,6 +26,7 @@ use kernel::{
     workqueue::{self, impl_has_work, new_work, Work, WorkItem},
 };
 
+const AOP_MAX_CALLS: usize = 8;
 const AOP_MMIO_SIZE: usize = 0x1e0000;
 const ASC_MMIO_SIZE: usize = 0x4000;
 const BOOTARGS_OFFSET: usize = 0x22c;
@@ -53,6 +58,7 @@ const EPIC_SUBTYPE_STD_SERVICE: u16 = 0xc0;
 const EPIC_SUBTYPE_FAKEHID_REPORT: u16 = 0xc4;
 const EPIC_SUBTYPE_RETCODE: u16 = 0x84;
 const EPIC_SUBTYPE_RETCODE_PAYLOAD: u16 = 0xa0;
+const EPIC_SUBTYPE_STRING: u16 = 0x8a;
 const QE_MAGIC1: u32 = from_fourcc(b" POI");
 const QE_MAGIC2: u32 = from_fourcc(b" POA");
 
@@ -114,7 +120,7 @@ struct FutureValue<T> {
     completion: CondVar,
 }
 
-impl<T: Clone> FutureValue<T> {
+impl<T> FutureValue<T> {
     fn pin_init() -> impl PinInit<FutureValue<T>> {
         pin_init!(
             FutureValue {
@@ -132,7 +138,7 @@ impl<T: Clone> FutureValue<T> {
         while ret_guard.is_none() {
             self.completion.wait(&mut ret_guard);
         }
-        ret_guard.as_ref().unwrap().clone()
+        ret_guard.take().unwrap()
     }
     fn reset(&self) {
         *self.val.lock() = None;
@@ -145,13 +151,19 @@ struct AFKRingBuffer {
     buf_size: usize,
 }
 
+struct CallResult {
+    retcode: u32,
+    extra_data: Option<KVec<u8>>,
+}
+
 struct AFKEndpoint {
     index: u8,
     iomem: Option<CoherentAllocation<u8>>,
     txbuf: Option<AFKRingBuffer>,
     rxbuf: Option<AFKRingBuffer>,
     seq: u16,
-    calls: [Option<Arc<FutureValue<u32>>>; 8],
+    calls: [Option<Arc<FutureValue<CallResult>>>; AOP_MAX_CALLS],
+    call_returns: [Option<KVec<u8>>; AOP_MAX_CALLS],
 }
 
 unsafe impl Send for AFKEndpoint {}
@@ -164,22 +176,23 @@ impl AFKEndpoint {
             txbuf: None,
             rxbuf: None,
             seq: 0,
-            calls: [const { None }; 8],
+            calls: [const { None }; AOP_MAX_CALLS],
+            call_returns: [const { None }; AOP_MAX_CALLS],
         }
     }
 
-    fn start(&self, rtkit: &mut rtkit::RtKit<AopData>) -> Result<()> {
+    fn start(&self, rtkit: Pin<&mut rtkit::RtKit<AopData>>) -> Result<()> {
         rtkit.send_message(self.index, AFK_MSG_INIT)
     }
 
-    fn stop(&self, rtkit: &mut rtkit::RtKit<AopData>) -> Result<()> {
+    fn stop(&self, rtkit: Pin<&mut rtkit::RtKit<AopData>>) -> Result<()> {
         rtkit.send_message(self.index, AFK_MSG_SHUTDOWN)
     }
 
     fn recv_message(
         &mut self,
         client: ArcBorrow<'_, AopData>,
-        rtkit: &mut rtkit::RtKit<AopData>,
+        rtkit: Pin<&mut rtkit::RtKit<AopData>>,
         msg: u64,
     ) -> Result<()> {
         let opc = msg >> 48;
@@ -293,7 +306,7 @@ impl AFKEndpoint {
     fn recv_get_buf(
         &mut self,
         dev: ARef<device::Device>,
-        rtkit: &mut rtkit::RtKit<AopData>,
+        rtkit: Pin<&mut rtkit::RtKit<AopData>>,
         msg: u64,
     ) -> Result<()> {
         let size = ((msg & 0xFFFF0000) >> 16) as usize * AFK_RB_BLOCK_STEP;
@@ -408,7 +421,10 @@ impl AFKEndpoint {
                 return Err(EIO);
             }
         } else if ehdr.category == EPIC_CATEGORY_REPLY {
-            if subtype == EPIC_SUBTYPE_RETCODE_PAYLOAD || subtype == EPIC_SUBTYPE_RETCODE {
+            if subtype == EPIC_SUBTYPE_RETCODE_PAYLOAD
+                || subtype == EPIC_SUBTYPE_RETCODE
+                || subtype == EPIC_SUBTYPE_STRING
+            {
                 if data.len() < mem::size_of::<u32>() {
                     dev_err!(
                         client.dev,
@@ -428,7 +444,20 @@ impl AFKEndpoint {
                     );
                     return Err(EIO);
                 }
-                self.calls[tag - 1].take().unwrap().complete(retcode);
+                let future = self.calls[tag - 1].take().unwrap();
+                let extra_data = if let Some(mut ret) = self.call_returns[tag - 1].take() {
+                    let len = cmp::min(data.len() - 4, ret.len());
+                    ret[..len].copy_from_slice(&data[4..(len + 4)]);
+                    ret.truncate(len);
+                    Some(ret)
+                } else {
+                    None
+                };
+                future.complete(CallResult {
+                    retcode,
+                    extra_data,
+                });
+
                 return Ok(());
             } else {
                 dev_err!(
@@ -451,7 +480,7 @@ impl AFKEndpoint {
     fn send_rb(
         &mut self,
         client: &AopData,
-        rtkit: &mut rtkit::RtKit<AopData>,
+        rtkit: Pin<&mut rtkit::RtKit<AopData>>,
         channel: u32,
         ty: u32,
         header: &[u8],
@@ -505,11 +534,12 @@ impl AFKEndpoint {
     fn epic_notify(
         &mut self,
         client: &AopData,
-        rtkit: &mut rtkit::RtKit<AopData>,
+        rtkit: Pin<&mut rtkit::RtKit<AopData>>,
         channel: u32,
         subtype: u16,
         data: &[u8],
-    ) -> Result<Arc<FutureValue<u32>>> {
+        ret: Option<KVec<u8>>,
+    ) -> Result<Arc<FutureValue<CallResult>>> {
         let mut tag = 0;
         for i in 0..self.calls.len() {
             if self.calls[i].is_none() {
@@ -536,6 +566,7 @@ impl AFKEndpoint {
             tag: tag as u16,
             ..EPICHeader::default()
         };
+        self.call_returns[tag - 1] = ret;
         self.send_rb(
             client,
             rtkit,
@@ -672,19 +703,19 @@ impl AopData {
     fn start(&self) -> Result<()> {
         {
             let mut guard = self.rtkit.lock();
-            let rtk = guard.as_mut().unwrap();
-            rtk.wake()?;
+            let mut rtk = guard.as_mut().as_pin_mut().unwrap();
+            rtk.as_mut().wake()?;
         }
         for ep in 0..AFK_ENDPOINT_COUNT {
             let rtk_ep_num = AFK_ENDPOINT_START + ep;
             let mut guard = self.rtkit.lock();
-            let rtk = guard.as_mut().unwrap();
-            if !rtk.has_endpoint(rtk_ep_num) {
+            let mut rtk = guard.as_mut().as_pin_mut().unwrap();
+            if !rtk.as_mut().has_endpoint(rtk_ep_num) {
                 continue;
             }
-            rtk.start_endpoint(rtk_ep_num)?;
+            rtk.as_mut().start_endpoint(rtk_ep_num)?;
             let ep_guard = self.endpoints[ep as usize].lock();
-            ep_guard.start(rtk)?;
+            ep_guard.start(rtk.as_mut())?;
         }
         Ok(())
     }
@@ -731,12 +762,12 @@ impl AopData {
             {
                 let rtk_ep_num = AFK_ENDPOINT_START + ep;
                 let mut guard = self.rtkit.lock();
-                let rtk = guard.as_mut().unwrap();
-                if !rtk.has_endpoint(rtk_ep_num) {
+                let mut rtk = guard.as_mut().as_pin_mut().unwrap();
+                if !rtk.as_mut().has_endpoint(rtk_ep_num) {
                     continue;
                 }
                 let ep_guard = self.endpoints[ep as usize].lock();
-                ep_guard.stop(rtk)?;
+                ep_guard.stop(rtk.as_mut())?;
             }
             self.ep_shutdown.wait();
             self.ep_shutdown.reset();
@@ -782,11 +813,37 @@ impl AOP for AopData {
         let ep_idx = svc.endpoint - AFK_ENDPOINT_START;
         let call = {
             let mut rtk_guard = self.rtkit.lock();
-            let rtk = rtk_guard.as_mut().unwrap();
+            let mut rtk = rtk_guard.as_mut().as_pin_mut().unwrap();
             let mut ep_guard = self.endpoints[ep_idx as usize].lock();
-            ep_guard.epic_notify(self, rtk, svc.channel, subtype, msg_bytes)?
+            ep_guard.epic_notify(self, rtk.as_mut(), svc.channel, subtype, msg_bytes, None)?
         };
-        Ok(call.wait())
+        Ok(call.wait().retcode)
+    }
+    fn epic_call_ret(
+        &self,
+        svc: &EPICService,
+        subtype: u16,
+        msg_bytes: &[u8],
+        ret_len: usize,
+    ) -> Result<(u32, KVec<u8>)> {
+        let ep_idx = svc.endpoint - AFK_ENDPOINT_START;
+        let call = {
+            let mut rtk_guard = self.rtkit.lock();
+            let mut rtk = rtk_guard.as_mut().as_pin_mut().unwrap();
+            let mut ep_guard = self.endpoints[ep_idx as usize].lock();
+            let mut ret_buf = KVec::new();
+            ret_buf.resize(ret_len, 0, GFP_KERNEL)?;
+            ep_guard.epic_notify(
+                self,
+                rtk.as_mut(),
+                svc.channel,
+                subtype,
+                msg_bytes,
+                Some(ret_buf),
+            )?
+        };
+        let res = call.wait();
+        Ok((res.retcode, res.extra_data.unwrap()))
     }
     fn add_fakehid_listener(
         &self,
@@ -825,7 +882,7 @@ impl rtkit::Buffer for NoBuffer {
     fn iova(&self) -> Result<usize> {
         unreachable!()
     }
-    fn buf(&mut self) -> Result<&mut [u8]> {
+    fn buf(&mut self) -> Result<IoSysMapRef<'_, u8>> {
         unreachable!()
     }
 }
@@ -836,9 +893,10 @@ impl rtkit::Operations for AopData {
     type Buffer = NoBuffer;
 
     fn recv_message(data: <Self::Data as ForeignOwnable>::Borrowed<'_>, ep: u8, msg: u64) {
-        let mut rtk = data.rtkit.lock();
+        let mut guard = data.rtkit.lock();
+        let mut rtk = guard.as_mut().as_pin_mut().unwrap();
         let mut ep_guard = data.endpoints[(ep - AFK_ENDPOINT_START) as usize].lock();
-        let ret = ep_guard.recv_message(data, rtk.as_mut().unwrap(), msg);
+        let ret = ep_guard.recv_message(data, rtk.as_mut(), msg);
         if let Err(e) = ret {
             dev_err!(data.dev, "Failed to handle rtkit message, error: {:?}", e);
         }
@@ -899,7 +957,7 @@ impl platform::Driver for AopDriver {
     fn probe(
         pdev: &platform::Device<Core>,
         info: Option<&Self::IdInfo>,
-    ) -> Result<Pin<KBox<AopDriver>>> {
+    ) -> impl PinInit<Self, Error> {
         let cfg = info.ok_or(ENODEV)?;
         unsafe { pdev.dma_set_mask_and_coherent(DmaMask::new::<42>())? };
         let aop_req = pdev.io_request_by_index(0).ok_or(EINVAL)?;
@@ -923,7 +981,7 @@ impl platform::Driver for AopDriver {
         let _ = data.start_cpu(asc_mmio);
         data.start()?;
         let data = data as Arc<dyn AOP>;
-        Ok(KBox::pin(AopDriver(data), GFP_KERNEL)?)
+        Ok(Self(data))
     }
 }
 

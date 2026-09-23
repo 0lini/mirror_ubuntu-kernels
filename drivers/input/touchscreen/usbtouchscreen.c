@@ -378,7 +378,7 @@ static int mtouch_alloc(struct usbtouch_usb *usbtouch)
 {
 	struct mtouch_priv *priv;
 
-	priv = kmalloc(sizeof(*priv), GFP_KERNEL);
+	priv = kmalloc_obj(*priv);
 	if (!priv)
 		return -ENOMEM;
 
@@ -938,7 +938,7 @@ static int nexio_alloc(struct usbtouch_usb *usbtouch)
 	struct nexio_priv *priv;
 	int ret = -ENOMEM;
 
-	priv = kmalloc(sizeof(*priv), GFP_KERNEL);
+	priv = kmalloc_obj(*priv);
 	if (!priv)
 		goto out_buf;
 
@@ -1069,6 +1069,11 @@ static int nexio_read_data(struct usbtouch_usb *usbtouch, unsigned char *pkt)
 		data_len -= 0x100;
 	if (x_len > 0xff)
 		x_len -= 0x80;
+
+	if (data_len > usbtouch->data_size - sizeof(*packet))
+		data_len = usbtouch->data_size - sizeof(*packet);
+	if (x_len > data_len)
+		x_len = data_len;
 
 	/* send ACK */
 	ret = usb_submit_urb(priv->ack, GFP_ATOMIC);
@@ -1458,7 +1463,7 @@ static int usbtouch_probe(struct usb_interface *intf,
 	if (!endpoint)
 		return -ENXIO;
 
-	usbtouch = kzalloc(sizeof(*usbtouch), GFP_KERNEL);
+	usbtouch = kzalloc_obj(*usbtouch);
 	input_dev = input_allocate_device();
 	if (!usbtouch || !input_dev)
 		goto out_free;

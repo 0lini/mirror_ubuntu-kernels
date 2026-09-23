@@ -10,6 +10,7 @@ obj-y += amd/
 obj-y += amlogic/
 obj-y += amphion/
 obj-y += apple/
+obj-y += arm/
 obj-y += aspeed/
 obj-y += atmel/
 obj-y += broadcom/

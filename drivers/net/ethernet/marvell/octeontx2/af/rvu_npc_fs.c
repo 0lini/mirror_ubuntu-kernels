@@ -1297,7 +1297,7 @@ static int npc_install_flow(struct rvu *rvu, int blkaddr, u16 target,
 find_rule:
 	rule = rvu_mcam_find_rule(mcam, entry_index);
 	if (!rule) {
-		rule = kzalloc(sizeof(*rule), GFP_KERNEL);
+		rule = kzalloc_obj(*rule);
 		if (!rule)
 			return -ENOMEM;
 		new = true;
@@ -1470,7 +1470,7 @@ process_flow:
 
 	/* ignore chan_mask in case pf func is not AF, revisit later */
 	if (!is_pffunc_af(req->hdr.pcifunc))
-		req->chan_mask = 0xFFF;
+		req->chan_mask = rvu_get_cpt_chan_mask(rvu);
 
 	err = npc_check_unsupported_flows(rvu, req->features, req->intf);
 	if (err)
@@ -1741,7 +1741,7 @@ int npc_install_mcam_drop_rule(struct rvu *rvu, int mcam_idx, u16 *counter_idx,
 	}
 
 	/* Add this entry to mcam rules list */
-	rule = kzalloc(sizeof(*rule), GFP_KERNEL);
+	rule = kzalloc_obj(*rule);
 	if (!rule)
 		return -ENOMEM;
 

@@ -3,7 +3,15 @@
 //! GPU firmware microsequence operations
 
 use super::types::*;
-use super::{buffer, compute, fragment, initdata, job, vertex, workqueue};
+use super::{
+    buffer,
+    compute,
+    fragment,
+    initdata,
+    job,
+    vertex,
+    workqueue, //
+};
 use crate::default_zeroed;
 
 pub(crate) trait Operation {}

@@ -152,12 +152,11 @@ static int snd_us16x08_recv_urb(struct snd_usb_audio *chip,
 	unsigned char *buf, int size)
 {
 
-	mutex_lock(&chip->mutex);
+	guard(mutex)(&chip->mutex);
 	snd_usb_ctl_msg(chip->dev,
 		usb_rcvctrlpipe(chip->dev, 0),
 		SND_US16X08_URB_METER_REQUEST,
 		SND_US16X08_URB_METER_REQUESTTYPE, 0, 0, buf, size);
-	mutex_unlock(&chip->mutex);
 	return 0;
 }
 
@@ -970,7 +969,7 @@ static struct snd_us16x08_comp_store *snd_us16x08_create_comp_store(void)
 	int i;
 	struct snd_us16x08_comp_store *tmp;
 
-	tmp = kmalloc(sizeof(*tmp), GFP_KERNEL);
+	tmp = kmalloc_obj(*tmp);
 	if (!tmp)
 		return NULL;
 
@@ -992,7 +991,7 @@ static struct snd_us16x08_eq_store *snd_us16x08_create_eq_store(void)
 	int i, b_idx;
 	struct snd_us16x08_eq_store *tmp;
 
-	tmp = kmalloc(sizeof(*tmp), GFP_KERNEL);
+	tmp = kmalloc_obj(*tmp);
 	if (!tmp)
 		return NULL;
 
@@ -1028,7 +1027,7 @@ static struct snd_us16x08_meter_store *snd_us16x08_create_meter_store(void)
 {
 	struct snd_us16x08_meter_store *tmp;
 
-	tmp = kzalloc(sizeof(*tmp), GFP_KERNEL);
+	tmp = kzalloc_obj(*tmp);
 	if (!tmp)
 		return NULL;
 	tmp->comp_index = 1;
@@ -1060,7 +1059,7 @@ static int add_new_ctl(struct usb_mixer_interface *mixer,
 
 	usb_audio_dbg(mixer->chip, "us16x08 add mixer %s\n", name);
 
-	elem = kzalloc(sizeof(*elem), GFP_KERNEL);
+	elem = kzalloc_obj(*elem);
 	if (!elem)
 		return -ENOMEM;
 

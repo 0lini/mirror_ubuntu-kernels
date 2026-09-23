@@ -3,7 +3,7 @@
 #include <linux/of.h>
 #include <linux/of_device.h>
 
-bool rust_helper_is_of_node(const struct fwnode_handle *fwnode)
+__rust_helper bool rust_helper_is_of_node(const struct fwnode_handle *fwnode)
 {
 	return is_of_node(fwnode);
 }

@@ -10,10 +10,24 @@
 use crate::debug::*;
 use crate::driver::AsahiDevice;
 use crate::{
-    alloc, buffer, driver, gem, mmu, module_parameters, queue,
-    util::{align, align_down, gcd, AnyBitPattern, RangeExt, Reader},
+    alloc,
+    buffer,
+    driver,
+    gem,
+    mmu,
+    module_parameters,
+    queue,
+    util::{
+        align,
+        align_down,
+        gcd,
+        AnyBitPattern,
+        RangeExt,
+        Reader, //
+    }, //
 };
 use core::mem::MaybeUninit;
+use core::ops::Deref;
 use core::ops::Range;
 use core::ptr::addr_of_mut;
 use kernel::bindings;
@@ -22,10 +36,21 @@ use kernel::drm::gem::BaseObject;
 use kernel::error::code::*;
 use kernel::new_mutex;
 use kernel::prelude::*;
-use kernel::sync::{Arc, Mutex};
+use kernel::sync::{
+    Arc,
+    Mutex, //
+};
 use kernel::time::NSEC_PER_SEC;
-use kernel::uaccess::{UserPtr, UserSlice};
-use kernel::{dma_fence, drm, uapi, xarray};
+use kernel::uaccess::{
+    UserPtr,
+    UserSlice, //
+};
+use kernel::{
+    dma_fence,
+    drm,
+    uapi,
+    xarray, //
+};
 
 const DEBUG_CLASS: DebugFlags = DebugFlags::File;
 
@@ -310,7 +335,8 @@ impl File {
         let size = core::mem::size_of::<uapi::drm_asahi_params_global>().min(data.size.try_into()?);
 
         // SAFETY: We only write to this userptr once, so there are no TOCTOU issues.
-        let mut params_writer = UserSlice::new(UserPtr::from_addr(data.pointer as _), size).writer();
+        let mut params_writer =
+            UserSlice::new(UserPtr::from_addr(data.pointer as _), size).writer();
 
         // SAFETY: `size` is at most the sizeof of `params`
         params_writer.write_slice(unsafe {
@@ -397,7 +423,7 @@ impl File {
             id
         );
         let mut dummy_obj = gem::new_kernel_object(device, 0x4000)?;
-        dummy_obj.vmap()?.as_mut_slice().fill(0);
+        dummy_obj.vmap()?.memset(0);
         let dummy_mapping =
             dummy_obj.map_at(&vm, mmu::IOVA_UNK_PAGE, mmu::PROT_GPU_SHARED_RW, true)?;
 
@@ -466,7 +492,7 @@ impl File {
                 .ok_or(ENOENT)?
                 .vm
                 .get_resv_obj();
-            Some(resv_gem.as_ref())
+            Some(resv_gem.deref())
         } else {
             None
         };
@@ -995,7 +1021,11 @@ impl File {
         // Copy the command buffer into the kernel. Because we need to iterate
         // the command buffer twice, we do this in one big copy_from_user to
         // avoid TOCTOU issues.
-        let reader = UserSlice::new(UserPtr::from_addr(data.cmdbuf as _), data.cmdbuf_size as usize).reader();
+        let reader = UserSlice::new(
+            UserPtr::from_addr(data.cmdbuf as _),
+            data.cmdbuf_size as usize,
+        )
+        .reader();
         reader.read_all(&mut vec, GFP_KERNEL)?;
 
         let objects = file.inner().objects();

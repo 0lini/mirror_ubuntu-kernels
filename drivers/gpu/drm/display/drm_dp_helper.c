@@ -124,6 +124,14 @@ bool drm_dp_clock_recovery_ok(const u8 link_status[DP_LINK_STATUS_SIZE],
 }
 EXPORT_SYMBOL(drm_dp_clock_recovery_ok);
 
+bool drm_dp_post_lt_adj_req_in_progress(const u8 link_status[DP_LINK_STATUS_SIZE])
+{
+	u8 lane_align = dp_link_status(link_status, DP_LANE_ALIGN_STATUS_UPDATED);
+
+	return lane_align & DP_POST_LT_ADJ_REQ_IN_PROGRESS;
+}
+EXPORT_SYMBOL(drm_dp_post_lt_adj_req_in_progress);
+
 u8 drm_dp_get_adjust_request_voltage(const u8 link_status[DP_LINK_STATUS_SIZE],
 				     int lane)
 {
@@ -2544,6 +2552,10 @@ static const struct dpcd_quirk dpcd_quirk_list[] = {
 	{ OUI(0x00, 0x0C, 0xE7), DEVICE_ID_ANY, false, BIT(DP_DPCD_QUIRK_HBLANK_EXPANSION_REQUIRES_DSC) },
 	/* Apple MacBookPro 2017 15 inch eDP Retina panel reports too low DP_MAX_LINK_RATE */
 	{ OUI(0x00, 0x10, 0xfa), DEVICE_ID(101, 68, 21, 101, 98, 97), false, BIT(DP_DPCD_QUIRK_CAN_DO_MAX_LINK_RATE_3_24_GBPS) },
+	/* Synaptics Panamera supports only a compressed bpp of 12 above 50% of its max DSC pixel throughput */
+	{ OUI(0x90, 0xCC, 0x24), DEVICE_ID('S', 'Y', 'N', 'A', 0x53, 0x22), true, BIT(DP_DPCD_QUIRK_DSC_THROUGHPUT_BPP_LIMIT) },
+	{ OUI(0x90, 0xCC, 0x24), DEVICE_ID('S', 'Y', 'N', 'A', 0x53, 0x31), true, BIT(DP_DPCD_QUIRK_DSC_THROUGHPUT_BPP_LIMIT) },
+	{ OUI(0x90, 0xCC, 0x24), DEVICE_ID('S', 'Y', 'N', 'A', 0x53, 0x33), true, BIT(DP_DPCD_QUIRK_DSC_THROUGHPUT_BPP_LIMIT) },
 };
 
 #undef OUI
@@ -2693,6 +2705,71 @@ u8 drm_dp_dsc_sink_bpp_incr(const u8 dsc_dpcd[DP_DSC_RECEIVER_CAP_SIZE])
 EXPORT_SYMBOL(drm_dp_dsc_sink_bpp_incr);
 
 /**
+ * drm_dp_dsc_slice_count_to_mask() - Convert a slice count to a slice count mask
+ * @slice_count: slice count
+ *
+ * Convert @slice_count to a slice count mask.
+ *
+ * Returns the slice count mask.
+ */
+u32 drm_dp_dsc_slice_count_to_mask(int slice_count)
+{
+	return BIT(slice_count - 1);
+}
+EXPORT_SYMBOL(drm_dp_dsc_slice_count_to_mask);
+
+/**
+ * drm_dp_dsc_sink_slice_count_mask() - Get the mask of valid DSC sink slice counts
+ * @dsc_dpcd: the sink's DSC DPCD capabilities
+ * @is_edp: %true for an eDP sink
+ *
+ * Get the mask of supported slice counts from the sink's DSC DPCD register.
+ *
+ * Returns:
+ * Mask of slice counts supported by the DSC sink:
+ * - > 0: bit#0,1,3,5..,23 set if the sink supports 1,2,4,6..,24 slices
+ * - 0:   if the sink doesn't support any slices
+ */
+u32 drm_dp_dsc_sink_slice_count_mask(const u8 dsc_dpcd[DP_DSC_RECEIVER_CAP_SIZE],
+				     bool is_edp)
+{
+	u8 slice_cap1 = dsc_dpcd[DP_DSC_SLICE_CAP_1 - DP_DSC_SUPPORT];
+	u32 mask = 0;
+
+	if (!is_edp) {
+		/* For DP, use values from DSC_SLICE_CAP_1 and DSC_SLICE_CAP2 */
+		u8 slice_cap2 = dsc_dpcd[DP_DSC_SLICE_CAP_2 - DP_DSC_SUPPORT];
+
+		if (slice_cap2 & DP_DSC_24_PER_DP_DSC_SINK)
+			mask |= drm_dp_dsc_slice_count_to_mask(24);
+		if (slice_cap2 & DP_DSC_20_PER_DP_DSC_SINK)
+			mask |= drm_dp_dsc_slice_count_to_mask(20);
+		if (slice_cap2 & DP_DSC_16_PER_DP_DSC_SINK)
+			mask |= drm_dp_dsc_slice_count_to_mask(16);
+	}
+
+	/* DP, eDP v1.5+ */
+	if (slice_cap1 & DP_DSC_12_PER_DP_DSC_SINK)
+		mask |= drm_dp_dsc_slice_count_to_mask(12);
+	if (slice_cap1 & DP_DSC_10_PER_DP_DSC_SINK)
+		mask |= drm_dp_dsc_slice_count_to_mask(10);
+	if (slice_cap1 & DP_DSC_8_PER_DP_DSC_SINK)
+		mask |= drm_dp_dsc_slice_count_to_mask(8);
+	if (slice_cap1 & DP_DSC_6_PER_DP_DSC_SINK)
+		mask |= drm_dp_dsc_slice_count_to_mask(6);
+	/* DP, eDP v1.4+ */
+	if (slice_cap1 & DP_DSC_4_PER_DP_DSC_SINK)
+		mask |= drm_dp_dsc_slice_count_to_mask(4);
+	if (slice_cap1 & DP_DSC_2_PER_DP_DSC_SINK)
+		mask |= drm_dp_dsc_slice_count_to_mask(2);
+	if (slice_cap1 & DP_DSC_1_PER_DP_DSC_SINK)
+		mask |= drm_dp_dsc_slice_count_to_mask(1);
+
+	return mask;
+}
+EXPORT_SYMBOL(drm_dp_dsc_sink_slice_count_mask);
+
+/**
  * drm_dp_dsc_sink_max_slice_count() - Get the max slice count
  * supported by the DSC sink.
  * @dsc_dpcd: DSC capabilities from DPCD
@@ -2711,43 +2788,7 @@ EXPORT_SYMBOL(drm_dp_dsc_sink_bpp_incr);
 u8 drm_dp_dsc_sink_max_slice_count(const u8 dsc_dpcd[DP_DSC_RECEIVER_CAP_SIZE],
 				   bool is_edp)
 {
-	u8 slice_cap1 = dsc_dpcd[DP_DSC_SLICE_CAP_1 - DP_DSC_SUPPORT];
-
-	if (is_edp) {
-		/* For eDP, register DSC_SLICE_CAPABILITIES_1 gives slice count */
-		if (slice_cap1 & DP_DSC_4_PER_DP_DSC_SINK)
-			return 4;
-		if (slice_cap1 & DP_DSC_2_PER_DP_DSC_SINK)
-			return 2;
-		if (slice_cap1 & DP_DSC_1_PER_DP_DSC_SINK)
-			return 1;
-	} else {
-		/* For DP, use values from DSC_SLICE_CAP_1 and DSC_SLICE_CAP2 */
-		u8 slice_cap2 = dsc_dpcd[DP_DSC_SLICE_CAP_2 - DP_DSC_SUPPORT];
-
-		if (slice_cap2 & DP_DSC_24_PER_DP_DSC_SINK)
-			return 24;
-		if (slice_cap2 & DP_DSC_20_PER_DP_DSC_SINK)
-			return 20;
-		if (slice_cap2 & DP_DSC_16_PER_DP_DSC_SINK)
-			return 16;
-		if (slice_cap1 & DP_DSC_12_PER_DP_DSC_SINK)
-			return 12;
-		if (slice_cap1 & DP_DSC_10_PER_DP_DSC_SINK)
-			return 10;
-		if (slice_cap1 & DP_DSC_8_PER_DP_DSC_SINK)
-			return 8;
-		if (slice_cap1 & DP_DSC_6_PER_DP_DSC_SINK)
-			return 6;
-		if (slice_cap1 & DP_DSC_4_PER_DP_DSC_SINK)
-			return 4;
-		if (slice_cap1 & DP_DSC_2_PER_DP_DSC_SINK)
-			return 2;
-		if (slice_cap1 & DP_DSC_1_PER_DP_DSC_SINK)
-			return 1;
-	}
-
-	return 0;
+	return fls(drm_dp_dsc_sink_slice_count_mask(dsc_dpcd, is_edp));
 }
 EXPORT_SYMBOL(drm_dp_dsc_sink_max_slice_count);
 
@@ -2832,6 +2873,158 @@ int drm_dp_dsc_sink_supported_input_bpcs(const u8 dsc_dpcd[DP_DSC_RECEIVER_CAP_S
 	return num_bpc;
 }
 EXPORT_SYMBOL(drm_dp_dsc_sink_supported_input_bpcs);
+
+/*
+ * See DP Standard v2.1a 2.8.4 Minimum Slices/Display, Table 2-159 and
+ * Appendix L.1 Derivation of Slice Count Requirements.
+ */
+static int dsc_sink_min_slice_throughput(int peak_pixel_rate)
+{
+	if (peak_pixel_rate >= 4800000)
+		return 600000;
+	else if (peak_pixel_rate >= 2700000)
+		return 400000;
+	else
+		return 340000;
+}
+
+/**
+ * drm_dp_dsc_sink_max_slice_throughput() - Get a DSC sink's maximum pixel throughput per slice
+ * @dsc_dpcd: DSC sink's capabilities from DPCD
+ * @peak_pixel_rate: Cumulative peak pixel rate in kHz
+ * @is_rgb_yuv444: The mode is either RGB or YUV444
+ *
+ * Return the DSC sink device's maximum pixel throughput per slice, based on
+ * the device's @dsc_dpcd capabilities, the @peak_pixel_rate of the transferred
+ * stream(s) and whether the output format @is_rgb_yuv444 or yuv422/yuv420.
+ *
+ * Note that @peak_pixel_rate is the total pixel rate transferred to the same
+ * DSC/display sink. For instance to calculate a tile's slice count of an MST
+ * multi-tiled display sink (not considering here the required
+ * rounding/alignment of slice count)::
+ *
+ *   @peak_pixel_rate = tile_pixel_rate * tile_count
+ *   total_slice_count = @peak_pixel_rate / drm_dp_dsc_sink_max_slice_throughput(@peak_pixel_rate)
+ *   tile_slice_count = total_slice_count / tile_count
+ *
+ * Returns:
+ * The maximum pixel throughput per slice supported by the DSC sink device
+ * in kPixels/sec.
+ */
+int drm_dp_dsc_sink_max_slice_throughput(const u8 dsc_dpcd[DP_DSC_RECEIVER_CAP_SIZE],
+					 int peak_pixel_rate, bool is_rgb_yuv444)
+{
+	int throughput;
+	int delta = 0;
+	int base;
+
+	throughput = dsc_dpcd[DP_DSC_PEAK_THROUGHPUT - DP_DSC_SUPPORT];
+
+	if (is_rgb_yuv444) {
+		throughput = (throughput & DP_DSC_THROUGHPUT_MODE_0_MASK) >>
+			     DP_DSC_THROUGHPUT_MODE_0_SHIFT;
+
+		delta = ((dsc_dpcd[DP_DSC_RC_BUF_BLK_SIZE - DP_DSC_SUPPORT]) &
+			 DP_DSC_THROUGHPUT_MODE_0_DELTA_MASK) >>
+			DP_DSC_THROUGHPUT_MODE_0_DELTA_SHIFT;	/* in units of 2 MPixels/sec */
+		delta *= 2000;
+	} else {
+		throughput = (throughput & DP_DSC_THROUGHPUT_MODE_1_MASK) >>
+			     DP_DSC_THROUGHPUT_MODE_1_SHIFT;
+	}
+
+	switch (throughput) {
+	case 0:
+		return dsc_sink_min_slice_throughput(peak_pixel_rate);
+	case 1:
+		base = 340000;
+		break;
+	case 2 ... 14:
+		base = 400000 + 50000 * (throughput - 2);
+		break;
+	case 15:
+		base = 170000;
+		break;
+	}
+
+	return base + delta;
+}
+EXPORT_SYMBOL(drm_dp_dsc_sink_max_slice_throughput);
+
+static u8 dsc_branch_dpcd_cap(const u8 dpcd[DP_DSC_BRANCH_CAP_SIZE], int reg)
+{
+	return dpcd[reg - DP_DSC_BRANCH_OVERALL_THROUGHPUT_0];
+}
+
+/**
+ * drm_dp_dsc_branch_max_overall_throughput() - Branch device's max overall DSC pixel throughput
+ * @dsc_branch_dpcd: DSC branch capabilities from DPCD
+ * @is_rgb_yuv444: The mode is either RGB or YUV444
+ *
+ * Return the branch device's maximum overall DSC pixel throughput, based on
+ * the device's DPCD DSC branch capabilities, and whether the output
+ * format @is_rgb_yuv444 or yuv422/yuv420.
+ *
+ * Returns:
+ * - 0:   The maximum overall throughput capability is not indicated by
+ *        the device separately and it must be determined from the per-slice
+ *        max throughput (see @drm_dp_dsc_branch_slice_max_throughput())
+ *        and the maximum slice count supported by the device.
+ * - > 0: The maximum overall DSC pixel throughput supported by the branch
+ *        device in kPixels/sec.
+ */
+int drm_dp_dsc_branch_max_overall_throughput(const u8 dsc_branch_dpcd[DP_DSC_BRANCH_CAP_SIZE],
+					     bool is_rgb_yuv444)
+{
+	int throughput;
+
+	if (is_rgb_yuv444)
+		throughput = dsc_branch_dpcd_cap(dsc_branch_dpcd,
+						 DP_DSC_BRANCH_OVERALL_THROUGHPUT_0);
+	else
+		throughput = dsc_branch_dpcd_cap(dsc_branch_dpcd,
+						 DP_DSC_BRANCH_OVERALL_THROUGHPUT_1);
+
+	switch (throughput) {
+	case 0:
+		return 0;
+	case 1:
+		return 680000;
+	default:
+		return 600000 + 50000 * throughput;
+	}
+}
+EXPORT_SYMBOL(drm_dp_dsc_branch_max_overall_throughput);
+
+/**
+ * drm_dp_dsc_branch_max_line_width() - Branch device's max DSC line width
+ * @dsc_branch_dpcd: DSC branch capabilities from DPCD
+ *
+ * Return the branch device's maximum overall DSC line width, based on
+ * the device's @dsc_branch_dpcd capabilities.
+ *
+ * Returns:
+ * - 0:        The maximum line width is not indicated by the device
+ *             separately and it must be determined from the maximum
+ *             slice count and slice-width supported by the device.
+ * - %-EINVAL: The device indicates an invalid maximum line width
+ *             (< 5120 pixels).
+ * - >= 5120:  The maximum line width in pixels.
+ */
+int drm_dp_dsc_branch_max_line_width(const u8 dsc_branch_dpcd[DP_DSC_BRANCH_CAP_SIZE])
+{
+	int line_width = dsc_branch_dpcd_cap(dsc_branch_dpcd, DP_DSC_BRANCH_MAX_LINE_WIDTH);
+
+	switch (line_width) {
+	case 0:
+		return 0;
+	case 1 ... 15:
+		return -EINVAL;
+	default:
+		return line_width * 320;
+	}
+}
+EXPORT_SYMBOL(drm_dp_dsc_branch_max_line_width);
 
 static int drm_dp_read_lttpr_regs(struct drm_dp_aux *aux,
 				  const u8 dpcd[DP_RECEIVER_CAP_SIZE], int address,

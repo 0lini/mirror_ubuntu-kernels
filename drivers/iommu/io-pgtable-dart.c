@@ -388,7 +388,7 @@ dart_alloc_pgtable(struct io_pgtable_cfg *cfg)
 	if (tbl_bits > max_tbl_bits)
 		return NULL;
 
-	data = kzalloc(sizeof(*data), GFP_KERNEL);
+	data = kzalloc_obj(*data);
 	if (!data)
 		return NULL;
 
@@ -471,9 +471,8 @@ static void apple_dart_free_pgtable(struct io_pgtable *iop)
 	struct dart_io_pgtable *data = io_pgtable_to_data(iop);
 	int i;
 
-	for (i = 0; i < (1 << data->tbl_bits) && data->pgd[i]; ++i) {
+	for (i = 0; i < (1 << data->tbl_bits) && data->pgd[i]; ++i)
 		apple_dart_free_pgtables(data, data->pgd[i], data->levels - 1);
-	}
 
 	kfree(data);
 }

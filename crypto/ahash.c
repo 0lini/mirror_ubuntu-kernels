@@ -88,7 +88,7 @@ static int hash_walk_new_entry(struct crypto_hash_walk *walk)
 
 	sg = walk->sg;
 	walk->offset = sg->offset;
-	walk->pg = nth_page(sg_page(walk->sg), (walk->offset >> PAGE_SHIFT));
+	walk->pg = sg_page(walk->sg) + (walk->offset >> PAGE_SHIFT);
 	walk->offset = offset_in_page(walk->offset);
 	walk->entrylen = sg->length;
 
@@ -226,7 +226,7 @@ int shash_ahash_digest(struct ahash_request *req, struct shash_desc *desc)
 	if (!IS_ENABLED(CONFIG_HIGHMEM))
 		return crypto_shash_digest(desc, data, nbytes, req->result);
 
-	page = nth_page(page, offset >> PAGE_SHIFT);
+	page += offset >> PAGE_SHIFT;
 	offset = offset_in_page(offset);
 
 	if (nbytes > (unsigned int)PAGE_SIZE - offset)
@@ -801,9 +801,8 @@ static int __maybe_unused crypto_ahash_report(
 	return nla_put(skb, CRYPTOCFGA_REPORT_HASH, sizeof(rhash), &rhash);
 }
 
-static void crypto_ahash_show(struct seq_file *m, struct crypto_alg *alg)
-	__maybe_unused;
-static void crypto_ahash_show(struct seq_file *m, struct crypto_alg *alg)
+static void __maybe_unused crypto_ahash_show(struct seq_file *m,
+					     struct crypto_alg *alg)
 {
 	seq_printf(m, "type         : ahash\n");
 	seq_printf(m, "async        : %s\n",
@@ -1020,17 +1019,13 @@ int crypto_register_ahashes(struct ahash_alg *algs, int count)
 
 	for (i = 0; i < count; i++) {
 		ret = crypto_register_ahash(&algs[i]);
-		if (ret)
-			goto err;
+		if (ret) {
+			crypto_unregister_ahashes(algs, i);
+			return ret;
+		}
 	}
 
 	return 0;
-
-err:
-	for (--i; i >= 0; --i)
-		crypto_unregister_ahash(&algs[i]);
-
-	return ret;
 }
 EXPORT_SYMBOL_GPL(crypto_register_ahashes);
 

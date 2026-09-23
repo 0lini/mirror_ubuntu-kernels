@@ -43,7 +43,11 @@
 //
 // Further discussion: https://github.com/rust-lang/unsafe-code-guidelines/issues/152
 
-use kernel::{error::code::*, prelude::*, sync::Arc};
+use kernel::{
+    error::code::*,
+    prelude::*,
+    sync::Arc, //
+};
 
 use core::fmt;
 use core::fmt::Debug;
@@ -51,7 +55,12 @@ use core::fmt::Formatter;
 use core::marker::PhantomData;
 use core::mem::MaybeUninit;
 use core::num::NonZeroU64;
-use core::ops::{Deref, DerefMut, Index, IndexMut};
+use core::ops::{
+    Deref,
+    DerefMut,
+    Index,
+    IndexMut, //
+};
 use core::{mem, ptr, slice};
 
 use crate::alloc::Allocation;

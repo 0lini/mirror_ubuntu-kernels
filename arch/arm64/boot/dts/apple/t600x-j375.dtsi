@@ -61,7 +61,7 @@
 
 /* remove once m1n1 enables sio nodes after setup */
 &sio {
-        status = "okay";
+	status = "okay";
 };
 
 /* USB Type C */
@@ -84,14 +84,14 @@
 				#size-cells = <0>;
 				port@0 {
 					reg = <0>;
-					typec0_con_hs: endpoint {
-						remote-endpoint = <&typec0_usb_hs>;
+					typec0_connector_hs: endpoint {
+						remote-endpoint = <&dwc3_0_hs>;
 					};
 				};
 				port@1 {
 					reg = <1>;
-					typec0_con_ss: endpoint {
-						remote-endpoint = <&typec0_usb_ss>;
+					typec0_connector_ss: endpoint {
+						remote-endpoint = <&atcphy0_typec_lanes>;
 					};
 				};
 			};
@@ -116,14 +116,14 @@
 				#size-cells = <0>;
 				port@0 {
 					reg = <0>;
-					typec1_con_hs: endpoint {
-						remote-endpoint = <&typec1_usb_hs>;
+					typec1_connector_hs: endpoint {
+						remote-endpoint = <&dwc3_1_hs>;
 					};
 				};
 				port@1 {
 					reg = <1>;
-					typec1_con_ss: endpoint {
-						remote-endpoint = <&typec1_usb_ss>;
+					typec1_connector_ss: endpoint {
+						remote-endpoint = <&atcphy1_typec_lanes>;
 					};
 				};
 			};
@@ -148,14 +148,14 @@
 				#size-cells = <0>;
 				port@0 {
 					reg = <0>;
-					typec2_con_hs: endpoint {
-						remote-endpoint = <&typec2_usb_hs>;
+					typec2_connector_hs: endpoint {
+						remote-endpoint = <&dwc3_2_hs>;
 					};
 				};
 				port@1 {
 					reg = <1>;
-					typec2_con_ss: endpoint {
-						remote-endpoint = <&typec2_usb_ss>;
+					typec2_connector_ss: endpoint {
+						remote-endpoint = <&atcphy2_typec_lanes>;
 					};
 				};
 			};
@@ -180,14 +180,14 @@
 				#size-cells = <0>;
 				port@0 {
 					reg = <0>;
-					typec3_con_hs: endpoint {
-						remote-endpoint = <&typec3_usb_hs>;
+					typec3_connector_hs: endpoint {
+						remote-endpoint = <&dwc3_3_hs>;
 					};
 				};
 				port@1 {
 					reg = <1>;
-					typec3_con_ss: endpoint {
-						remote-endpoint = <&typec3_usb_ss>;
+					typec3_connector_ss: endpoint {
+						remote-endpoint = <&atcphy3_typec_lanes>;
 					};
 				};
 			};
@@ -197,66 +197,170 @@
 
 /* USB controllers */
 &dwc3_0 {
-	port {
-		typec0_usb_hs: endpoint {
-			remote-endpoint = <&typec0_con_hs>;
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			reg = <0>;
+			dwc3_0_hs: endpoint {
+				remote-endpoint = <&typec0_connector_hs>;
+			};
+		};
+
+		port@1 {
+			reg = <1>;
+			dwc3_0_ss: endpoint {
+				remote-endpoint = <&atcphy0_usb3>;
+			};
 		};
 	};
 };
 
 &dwc3_1 {
-	port {
-		typec1_usb_hs: endpoint {
-			remote-endpoint = <&typec1_con_hs>;
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			reg = <0>;
+			dwc3_1_hs: endpoint {
+				remote-endpoint = <&typec1_connector_hs>;
+			};
+		};
+
+		port@1 {
+			reg = <1>;
+			dwc3_1_ss: endpoint {
+				remote-endpoint = <&atcphy1_usb3>;
+			};
 		};
 	};
 };
 
 &dwc3_2 {
-	port {
-		typec2_usb_hs: endpoint {
-			remote-endpoint = <&typec2_con_hs>;
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			reg = <0>;
+			dwc3_2_hs: endpoint {
+				remote-endpoint = <&typec2_connector_hs>;
+			};
+		};
+
+		port@1 {
+			reg = <1>;
+			dwc3_2_ss: endpoint {
+				remote-endpoint = <&atcphy2_usb3>;
+			};
 		};
 	};
 };
 
 &dwc3_3 {
-	port {
-		typec3_usb_hs: endpoint {
-			remote-endpoint = <&typec3_con_hs>;
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			reg = <0>;
+			dwc3_3_hs: endpoint {
+				remote-endpoint = <&typec3_connector_hs>;
+			};
+		};
+
+		port@1 {
+			reg = <1>;
+			dwc3_3_ss: endpoint {
+				remote-endpoint = <&atcphy3_usb3>;
+			};
 		};
 	};
 };
 
 /* Type-C PHYs */
 &atcphy0 {
-	port {
-		typec0_usb_ss: endpoint {
-			remote-endpoint = <&typec0_con_ss>;
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			reg = <0>;
+			atcphy0_typec_lanes: endpoint {
+				remote-endpoint = <&typec0_connector_ss>;
+			};
+		};
+
+		port@1 {
+			reg = <1>;
+			atcphy0_usb3: endpoint {
+				remote-endpoint = <&dwc3_0_ss>;
+			};
 		};
 	};
 };
 
 &atcphy1 {
-	port {
-		typec1_usb_ss: endpoint {
-			remote-endpoint = <&typec1_con_ss>;
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			reg = <0>;
+			atcphy1_typec_lanes: endpoint {
+				remote-endpoint = <&typec1_connector_ss>;
+			};
+		};
+
+		port@1 {
+			reg = <1>;
+			atcphy1_usb3: endpoint {
+				remote-endpoint = <&dwc3_1_ss>;
+			};
 		};
 	};
 };
 
 &atcphy2 {
-	port {
-		typec2_usb_ss: endpoint {
-			remote-endpoint = <&typec2_con_ss>;
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			reg = <0>;
+			atcphy2_typec_lanes: endpoint {
+				remote-endpoint = <&typec2_connector_ss>;
+			};
+		};
+
+		port@1 {
+			reg = <1>;
+			atcphy2_usb3: endpoint {
+				remote-endpoint = <&dwc3_2_ss>;
+			};
 		};
 	};
 };
 
 &atcphy3 {
-	port {
-		typec3_usb_ss: endpoint {
-			remote-endpoint = <&typec3_con_ss>;
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			reg = <0>;
+			atcphy3_typec_lanes: endpoint {
+				remote-endpoint = <&typec3_connector_ss>;
+			};
+		};
+
+		port@1 {
+			reg = <1>;
+			atcphy3_usb3: endpoint {
+				remote-endpoint = <&dwc3_3_ss>;
+			};
 		};
 	};
 };

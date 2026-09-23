@@ -12,8 +12,16 @@ use crate::alloc::Allocator;
 use crate::debug::*;
 use crate::fw::types::*;
 use crate::gpu::GpuManager;
-use crate::{file, fw, gpu, microseq};
-use crate::{inner_ptr, inner_weak_ptr};
+use crate::{
+    file,
+    fw,
+    gpu,
+    microseq, //
+};
+use crate::{
+    inner_ptr,
+    inner_weak_ptr, //
+};
 use core::sync::atomic::Ordering;
 use kernel::dma_fence::RawDmaFence;
 use kernel::drm::sched::Job;

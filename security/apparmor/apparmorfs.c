@@ -33,6 +33,7 @@
 #include "include/crypto.h"
 #include "include/ipc.h"
 #include "include/label.h"
+#include "include/net.h"
 #include "include/lib.h"
 #include "include/policy.h"
 #include "include/policy_ns.h"
@@ -73,10 +74,10 @@
 
 struct rawdata_f_data {
 	struct aa_loaddata *loaddata;
+	DECLARE_FLEX_ARRAY(char, data);
 };
 
 #ifdef CONFIG_SECURITY_APPARMOR_EXPORT_BINARY
-#define RAWDATA_F_DATA_BUF(p) (char *)(p + 1)
 
 static void rawdata_f_data_free(struct rawdata_f_data *private)
 {
@@ -173,14 +174,6 @@ static struct aa_proxy *get_proxy_common_ref(struct aa_common_ref *ref)
 	if (ref)
 		return aa_get_proxy(container_of(ref, struct aa_proxy, count));
 
-	return NULL;
-}
-
-static struct aa_loaddata *get_loaddata_common_ref(struct aa_common_ref *ref)
-{
-	if (ref)
-		return aa_get_i_loaddata(container_of(ref, struct aa_loaddata,
-						      count));
 	return NULL;
 }
 
@@ -430,17 +423,22 @@ static void aafs_remove(struct dentry *dentry)
 	if (!dentry || IS_ERR(dentry))
 		return;
 
+	/* ->d_parent is stable as rename is not supported */
 	dir = d_inode(dentry->d_parent);
-	inode_lock(dir);
-	if (simple_positive(dentry)) {
-		if (d_is_dir(dentry))
-			simple_rmdir(dir, dentry);
-		else
-			simple_unlink(dir, dentry);
+	dentry = start_removing_dentry(dentry->d_parent, dentry);
+	if (!IS_ERR(dentry) && simple_positive(dentry)) {
+		if (d_is_dir(dentry)) {
+			if (!WARN_ON(!simple_empty(dentry))) {
+				__simple_rmdir(dir, dentry);
+				dput(dentry);
+			}
+		} else {
+			__simple_unlink(dir, dentry);
+			dput(dentry);
+		}
 		d_delete(dentry);
-		dput(dentry);
 	}
-	inode_unlock(dir);
+	end_removing(dentry);
 	simple_release_fs(&aafs_mnt, &aafs_count);
 }
 
@@ -486,6 +484,69 @@ static struct aa_loaddata *aa_simple_write_to_buffer(const char __user *userbuf,
 
 	return data;
 }
+static int decompress_zstd(char *src, size_t slen, char *dst, size_t dlen);
+/**
+ * aa_get_data_from_compressed - common routine for getting compressed policy
+ * from user and get both compressed and uncompressed version.
+ * @userbuf: user buffer to copy data from  (NOT NULL)
+ * @buffer_size: size of user buffer
+ * @pos: position write is at in the file (NOT NULL)
+ * @compressed_data Ptr on compressed data. *compressed_data is allocated there
+ *
+ * Returns: kernel buffer containing copy of user buffer data or an
+ *          ERR_PTR on failure.
+ */
+
+static struct aa_loaddata *aa_get_data_from_compressed(const char __user *userbuf,
+						  size_t buffer_size,
+						  loff_t *pos,
+						  char **compressed_data)
+{
+	struct aa_loaddata *data;
+	zstd_frame_header header;
+	int error;
+
+	if (!userbuf || !pos)
+		return ERR_PTR(-EINVAL);
+	if (*pos)
+		return ERR_PTR(-ESPIPE);
+
+	*compressed_data = kvmalloc(buffer_size, GFP_KERNEL);
+	if (!*compressed_data)
+		return ERR_PTR(-ENOMEM);
+	error = copy_from_user(*compressed_data, userbuf, buffer_size);
+	if (error)
+		goto fail;
+
+	error = zstd_get_frame_header(&header, *compressed_data, buffer_size);
+	if (error || header.frameContentSize == ZSTD_CONTENTSIZE_UNKNOWN ||
+	    header.frameContentSize == ZSTD_CONTENTSIZE_ERROR) {
+		error = -EINVAL;
+		goto fail;
+	}
+
+	data = aa_loaddata_alloc(header.frameContentSize);
+	if (IS_ERR(data)) {
+		error = PTR_ERR(data);
+		goto fail;
+	}
+
+	// We then decompress the data
+	error = decompress_zstd(*compressed_data, buffer_size, data->data,
+				header.frameContentSize);
+	if (error)
+		goto fail_decompress;
+
+	data->size = header.frameContentSize;
+	return data;
+
+fail_decompress:
+	aa_put_i_loaddata(data);
+fail:
+	kvfree(*compressed_data);
+	return ERR_PTR(error);
+
+}
 
 static ssize_t policy_update(u32 mask, const char __user *buf, size_t size,
 			     loff_t *pos, struct aa_ns *ns,
@@ -494,6 +555,9 @@ static ssize_t policy_update(u32 mask, const char __user *buf, size_t size,
 	struct aa_loaddata *data;
 	struct aa_label *label;
 	ssize_t error;
+	char *compressed_data = NULL;
+	__le32 magic_le;
+	bool is_compressed;
 
 	label = begin_current_label_crit_section();
 
@@ -504,10 +568,33 @@ static ssize_t policy_update(u32 mask, const char __user *buf, size_t size,
 	if (error)
 		goto end_section;
 
-	data = aa_simple_write_to_buffer(buf, size, size, pos);
-	error = PTR_ERR(data);
+	/* If the policy is userspace compressed we start by decompressing it
+	 * to make the required checks (computing hash, verifying profile, ...)
+	 *
+	 * Getting a userspace-compressed version then decompressing it in the
+	 * kernel actually makes sense since zstd decompression is ~3.5x faster
+	 * than compression. This also allow to increase the compression level.
+	 */
+
+	if (size >= sizeof(__le32) &&
+	    !copy_from_user(&magic_le, buf, sizeof(magic_le)) &&
+	    le32_to_cpu(magic_le) == ZSTD_MAGICNUMBER)
+		is_compressed = true;
+	else
+		is_compressed = false;
+
+	if (is_compressed) {
+
+		data = aa_get_data_from_compressed(buf, size, pos, &compressed_data);
+		error = PTR_ERR(data);
+	} else {
+		data = aa_simple_write_to_buffer(buf, size, size, pos);
+		error = PTR_ERR(data);
+	}
+
 	if (!IS_ERR(data)) {
-		error = aa_replace_profiles(ns, label, mask, data);
+		error = aa_replace_profiles(ns, label, mask, data,
+					    compressed_data, size);
 		/* put pcount, which will put count and free if no
 		 * profiles referencing it.
 		 */
@@ -553,6 +640,7 @@ static const struct file_operations aa_fs_profile_replace = {
 	.write = profile_replace,
 	.llseek = default_llseek,
 };
+
 
 /* .remove file hook fn to remove loaded policy */
 static ssize_t profile_remove(struct file *f, const char __user *buf,
@@ -646,7 +734,7 @@ static ssize_t ns_revision_read(struct file *file, char __user *buf,
 
 static int ns_revision_open(struct inode *inode, struct file *file)
 {
-	struct aa_revision *rev = kzalloc(sizeof(*rev), GFP_KERNEL);
+	struct aa_revision *rev = kzalloc_obj(*rev);
 
 	if (!rev)
 		return -ENOMEM;
@@ -1232,7 +1320,7 @@ static ssize_t query_label(char *buf, size_t buf_len,
 
 	perms = allperms;
 	if (view_only) {
-		label_for_each_in_ns(i, labels_ns(label), label, profile) {
+		label_for_each_in_scope(i, labels_ns(label), label, profile) {
 			profile_query_cb(profile, &perms, match_str, match_len);
 		}
 	} else {
@@ -1699,6 +1787,14 @@ static const struct file_operations seq_rawdata_ ##NAME ##_fops = {	      \
 	.release	= seq_rawdata_release,				      \
 }									      \
 
+static struct aa_loaddata *get_loaddata_common_ref(struct aa_common_ref *ref)
+{
+	if (ref)
+		return aa_get_i_loaddata(container_of(ref, struct aa_loaddata,
+						      count));
+	return NULL;
+}
+
 static int seq_rawdata_open(struct inode *inode, struct file *file,
 			    int (*show)(struct seq_file *, void *))
 {
@@ -1815,7 +1911,7 @@ static ssize_t rawdata_read(struct file *file, char __user *buf, size_t size,
 	struct rawdata_f_data *private = file->private_data;
 
 	return simple_read_from_buffer(buf, size, ppos,
-				       RAWDATA_F_DATA_BUF(private),
+				       private->data,
 				       private->loaddata->size);
 }
 
@@ -1848,8 +1944,7 @@ static int rawdata_open(struct inode *inode, struct file *file)
 	private->loaddata = loaddata;
 
 	error = decompress_zstd(loaddata->data, loaddata->compressed_size,
-				RAWDATA_F_DATA_BUF(private),
-				loaddata->size);
+				private->data, loaddata->size);
 	if (error)
 		goto fail_decompress;
 
@@ -2043,16 +2138,20 @@ static char *gen_symlink_name(int depth, const char *dirname, const char *fname)
 {
 	char *buffer, *s;
 	int error;
-	int size = depth * 6 + strlen(dirname) + strlen(fname) + 11;
+	const char *path = "../../";
+	size_t path_len = strlen(path);
+	int size;
 
+	/* Extra 11 bytes: "raw_data" (9) + two slashes "//" (2) */
+	size = depth * path_len + strlen(dirname) + strlen(fname) + 11;
 	s = buffer = kmalloc(size, GFP_KERNEL);
 	if (!buffer)
 		return ERR_PTR(-ENOMEM);
 
 	for (; depth > 0; depth--) {
-		strcpy(s, "../../");
-		s += 6;
-		size -= 6;
+		memcpy(s, path, path_len);
+		s += path_len;
+		size -= path_len;
 	}
 
 	error = snprintf(s, size, "raw_data/%s/%s", dirname, fname);
@@ -2081,6 +2180,15 @@ static const char *rawdata_get_link_base(struct dentry *dentry,
 
 	label = aa_get_label_rcu(&proxy->label);
 	profile = labels_profile(label);
+
+	/* rawdata can be null when aa_g_export_binary is unset during
+	 * runtime and a profile is replaced
+	 */
+	if (!profile->rawdata) {
+		aa_put_label(label);
+		return ERR_PTR(-ENOENT);
+	}
+
 	depth = profile_depth(profile);
 	target = gen_symlink_name(depth, profile->rawdata->name, name);
 	aa_put_label(label);
@@ -2824,6 +2932,7 @@ static struct aa_sfs_entry aa_sfs_entry_notify_versions[] = {
 static struct aa_sfs_entry aa_sfs_entry_policy[] = {
 	AA_SFS_DIR("versions",			aa_sfs_entry_versions),
 	AA_SFS_FILE_BOOLEAN("set_load",		1),
+	AA_SFS_FILE_BOOLEAN("diff_encode",		1),
 	/* number of out of band transitions supported */
 	AA_SFS_FILE_U64("outofband",		MAX_OOB_SUPPORTED),
 	AA_SFS_FILE_U64("permstable32_version",	3),
@@ -2833,6 +2942,7 @@ static struct aa_sfs_entry aa_sfs_entry_policy[] = {
 	AA_SFS_DIR("unconfined_restrictions",   aa_sfs_entry_unconfined),
 	AA_SFS_DIR("notify",   aa_sfs_entry_notify),
 	AA_SFS_DIR("notify_versions",   aa_sfs_entry_notify_versions),
+	AA_SFS_FILE_BOOLEAN("compressed_load",	1),
 	{ }
 };
 
@@ -2880,6 +2990,7 @@ static struct aa_sfs_entry aa_sfs_entry_features[] = {
 	AA_SFS_DIR("ipc",			aa_sfs_entry_ipc),
 	AA_SFS_DIR("network_v8",		aa_sfs_entry_network),
 	AA_SFS_DIR("network_v9",		aa_sfs_entry_networkv9),
+	AA_SFS_DIR("network_v9_skb",		aa_sfs_entry_networkv9_skb),
 	AA_SFS_DIR("mount",			aa_sfs_entry_mount),
 	AA_SFS_DIR("namespaces",		aa_sfs_entry_ns),
 	AA_SFS_FILE_U64("capability",		VFS_CAP_FLAGS_MASK),
@@ -3108,7 +3219,7 @@ static const struct inode_operations policy_link_iops = {
  *
  * Returns: error on failure
  */
-static int __init aa_create_aafs(void)
+int __init aa_create_aafs(void)
 {
 	struct dentry *dent;
 	int error;
@@ -3187,5 +3298,3 @@ error:
 	AA_ERROR("Error creating AppArmor securityfs\n");
 	return error;
 }
-
-fs_initcall(aa_create_aafs);

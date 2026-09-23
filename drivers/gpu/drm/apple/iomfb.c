@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only OR MIT
-/* Copyright 2021 Alyssa Rosenzweig <alyssa@rosenzweig.io> */
+/* Copyright 2021 Alyssa Rosenzweig */
 
 #include <linux/align.h>
 #include <linux/bitfield.h>
@@ -258,7 +258,6 @@ void dcp_hotplug(struct work_struct *work)
 
 	drm_kms_helper_connector_hotplug_event(&connector->base);
 }
-EXPORT_SYMBOL_GPL(dcp_hotplug);
 
 static void dcpep_handle_cb(struct apple_dcp *dcp, enum dcp_context_id context,
 			    void *data, u32 length, u16 offset)
@@ -344,38 +343,6 @@ static void dcpep_got_msg(struct apple_dcp *dcp, u64 message)
 		dcpep_handle_cb(dcp, ctx_id, data, length, offset);
 }
 
-/*
- * DRM specifies rectangles as start and end coordinates.  DCP specifies
- * rectangles as a start coordinate and a width/height. Convert a DRM rectangle
- * to a DCP rectangle.
- */
-struct dcp_rect drm_to_dcp_rect(struct drm_rect *rect)
-{
-	return (struct dcp_rect){ .x = rect->x1,
-				  .y = rect->y1,
-				  .w = drm_rect_width(rect),
-				  .h = drm_rect_height(rect) };
-}
-
-u32 drm_format_to_dcp(u32 drm)
-{
-	switch (drm) {
-	case DRM_FORMAT_XRGB8888:
-	case DRM_FORMAT_ARGB8888:
-		return fourcc_code('A', 'R', 'G', 'B');
-
-	case DRM_FORMAT_XBGR8888:
-	case DRM_FORMAT_ABGR8888:
-		return fourcc_code('A', 'B', 'G', 'R');
-
-	case DRM_FORMAT_XRGB2101010:
-		return fourcc_code('r', '0', '3', 'w');
-	}
-
-	pr_warn("DRM format %X not supported in DCP\n", drm);
-	return 0;
-}
-
 int dcp_get_modes(struct drm_connector *connector)
 {
 	struct apple_connector *apple_connector = to_apple_connector(connector);
@@ -413,7 +380,6 @@ int dcp_get_modes(struct drm_connector *connector)
 
 	return dcp->nr_modes;
 }
-EXPORT_SYMBOL_GPL(dcp_get_modes);
 
 /* The user may own drm_display_mode, so we need to search for our copy */
 struct dcp_display_mode *lookup_mode(struct apple_dcp *dcp,
@@ -440,7 +406,6 @@ enum drm_mode_status dcp_mode_valid(struct drm_connector *connector,
 
 	return lookup_mode(dcp, mode) ? MODE_OK : MODE_BAD;
 }
-EXPORT_SYMBOL_GPL(dcp_mode_valid);
 
 int dcp_crtc_atomic_modeset(struct drm_crtc *crtc,
 			    struct drm_atomic_state *state)
@@ -479,7 +444,6 @@ int dcp_crtc_atomic_modeset(struct drm_crtc *crtc,
 
 	return ret;
 }
-EXPORT_SYMBOL_GPL(dcp_crtc_atomic_modeset);
 
 bool dcp_crtc_mode_fixup(struct drm_crtc *crtc,
 			 const struct drm_display_mode *mode,
@@ -492,7 +456,6 @@ bool dcp_crtc_mode_fixup(struct drm_crtc *crtc,
 	/* TODO: support synthesized modes through scaling */
 	return lookup_mode(dcp, mode) != NULL;
 }
-EXPORT_SYMBOL(dcp_crtc_mode_fixup);
 
 
 void dcp_flush(struct drm_crtc *crtc, struct drm_atomic_state *state)
@@ -527,7 +490,6 @@ void dcp_flush(struct drm_crtc *crtc, struct drm_atomic_state *state)
 		break;
 	}
 }
-EXPORT_SYMBOL_GPL(dcp_flush);
 
 static void iomfb_start(struct apple_dcp *dcp)
 {
@@ -550,7 +512,6 @@ bool dcp_is_initialized(struct platform_device *pdev)
 
 	return dcp->active;
 }
-EXPORT_SYMBOL_GPL(dcp_is_initialized);
 
 void iomfb_recv_msg(struct apple_dcp *dcp, u64 message)
 {

@@ -236,6 +236,7 @@ struct net_device *br_fdb_find_port(const struct net_device *br_dev,
 				    const unsigned char *addr,
 				    __u16 vid)
 {
+	const struct net_bridge_port *dst;
 	struct net_bridge_fdb_entry *f;
 	struct net_device *dev = NULL;
 	struct net_bridge *br;
@@ -248,8 +249,11 @@ struct net_device *br_fdb_find_port(const struct net_device *br_dev,
 	br = netdev_priv(br_dev);
 	rcu_read_lock();
 	f = br_fdb_find_rcu(br, addr, vid);
-	if (f && f->dst)
-		dev = f->dst->dev;
+	if (f) {
+		dst = READ_ONCE(f->dst);
+		if (dst)
+			dev = dst->dev;
+	}
 	rcu_read_unlock();
 
 	return dev;
@@ -346,7 +350,7 @@ static void fdb_delete_local(struct net_bridge *br,
 		vg = nbp_vlan_group(op);
 		if (op != p && ether_addr_equal(op->dev->dev_addr, addr) &&
 		    (!vid || br_vlan_find(vg, vid))) {
-			f->dst = op;
+			WRITE_ONCE(f->dst, op);
 			clear_bit(BR_FDB_ADDED_BY_USER, &f->flags);
 			return;
 		}
@@ -357,7 +361,7 @@ static void fdb_delete_local(struct net_bridge *br,
 	/* Maybe bridge device has same hw addr? */
 	if (p && ether_addr_equal(br->dev->dev_addr, addr) &&
 	    (!vid || (v && br_vlan_should_use(v)))) {
-		f->dst = NULL;
+		WRITE_ONCE(f->dst, NULL);
 		clear_bit(BR_FDB_ADDED_BY_USER, &f->flags);
 		return;
 	}
@@ -459,6 +463,9 @@ void br_fdb_changeaddr(struct net_bridge_port *p, const unsigned char *newaddr)
 	struct net_bridge_fdb_entry *f;
 	struct net_bridge *br = p->br;
 	struct net_bridge_vlan *v;
+	bool local_vlan_0;
+
+	local_vlan_0 = br_opt_get(br, BROPT_FDB_LOCAL_VLAN_0);
 
 	spin_lock_bh(&br->hash_lock);
 	vg = nbp_vlan_group(p);
@@ -468,11 +475,11 @@ void br_fdb_changeaddr(struct net_bridge_port *p, const unsigned char *newaddr)
 			/* delete old one */
 			fdb_delete_local(br, p, f);
 
-			/* if this port has no vlan information
-			 * configured, we can safely be done at
-			 * this point.
+			/* if this port has no vlan information configured, or
+			 * local entries are only kept on VLAN 0, we can safely
+			 * be done at this point.
 			 */
-			if (!vg || !vg->num_vlans)
+			if (!vg || !vg->num_vlans || local_vlan_0)
 				goto insert;
 		}
 	}
@@ -481,7 +488,7 @@ insert:
 	/* insert new address,  may fail if invalid address or dup. */
 	fdb_add_local(br, p, newaddr, 0);
 
-	if (!vg || !vg->num_vlans)
+	if (!vg || !vg->num_vlans || local_vlan_0)
 		goto done;
 
 	/* Now add entries for every VLAN configured on the port.
@@ -500,6 +507,9 @@ void br_fdb_change_mac_address(struct net_bridge *br, const u8 *newaddr)
 	struct net_bridge_vlan_group *vg;
 	struct net_bridge_fdb_entry *f;
 	struct net_bridge_vlan *v;
+	bool local_vlan_0;
+
+	local_vlan_0 = br_opt_get(br, BROPT_FDB_LOCAL_VLAN_0);
 
 	spin_lock_bh(&br->hash_lock);
 
@@ -511,7 +521,7 @@ void br_fdb_change_mac_address(struct net_bridge *br, const u8 *newaddr)
 
 	fdb_add_local(br, NULL, newaddr, 0);
 	vg = br_vlan_group(br);
-	if (!vg || !vg->num_vlans)
+	if (!vg || !vg->num_vlans || local_vlan_0)
 		goto out;
 	/* Now remove and add entries for every VLAN configured on the
 	 * bridge.  This function runs under RTNL so the bitmap will not
@@ -574,6 +584,108 @@ void br_fdb_cleanup(struct work_struct *work)
 	/* Cleanup minimum 10 milliseconds apart */
 	work_delay = max_t(unsigned long, work_delay, msecs_to_jiffies(10));
 	mod_delayed_work(system_long_wq, &br->gc_work, work_delay);
+}
+
+static void br_fdb_delete_locals_per_vlan_port(struct net_bridge *br,
+					       struct net_bridge_port *p)
+{
+	struct net_bridge_vlan_group *vg;
+	struct net_bridge_vlan *v;
+	struct net_device *dev;
+
+	if (p) {
+		vg = nbp_vlan_group(p);
+		dev = p->dev;
+	} else {
+		vg = br_vlan_group(br);
+		dev = br->dev;
+	}
+
+	if (!vg)
+		return;
+
+	list_for_each_entry(v, &vg->vlan_list, vlist)
+		br_fdb_find_delete_local(br, p, dev->dev_addr, v->vid);
+}
+
+static void br_fdb_delete_locals_per_vlan(struct net_bridge *br)
+{
+	struct net_bridge_port *p;
+
+	ASSERT_RTNL();
+
+	list_for_each_entry(p, &br->port_list, list)
+		br_fdb_delete_locals_per_vlan_port(br, p);
+
+	br_fdb_delete_locals_per_vlan_port(br, NULL);
+}
+
+static int br_fdb_insert_locals_per_vlan_port(struct net_bridge *br,
+					      struct net_bridge_port *p,
+					      struct netlink_ext_ack *extack)
+{
+	struct net_bridge_vlan_group *vg;
+	struct net_bridge_vlan *v;
+	struct net_device *dev;
+	int err;
+
+	if (p) {
+		vg = nbp_vlan_group(p);
+		dev = p->dev;
+	} else {
+		vg = br_vlan_group(br);
+		dev = br->dev;
+	}
+
+	if (!vg)
+		return 0;
+
+	list_for_each_entry(v, &vg->vlan_list, vlist) {
+		if (!br_vlan_should_use(v))
+			continue;
+
+		err = br_fdb_add_local(br, p, dev->dev_addr, v->vid);
+		if (err)
+			return err;
+	}
+
+	return 0;
+}
+
+static int br_fdb_insert_locals_per_vlan(struct net_bridge *br,
+					 struct netlink_ext_ack *extack)
+{
+	struct net_bridge_port *p;
+	int err;
+
+	ASSERT_RTNL();
+
+	list_for_each_entry(p, &br->port_list, list) {
+		err = br_fdb_insert_locals_per_vlan_port(br, p, extack);
+		if (err)
+			goto rollback;
+	}
+
+	err = br_fdb_insert_locals_per_vlan_port(br, NULL, extack);
+	if (err)
+		goto rollback;
+
+	return 0;
+
+rollback:
+	NL_SET_ERR_MSG_MOD(extack, "fdb_local_vlan_0 toggle: FDB entry insertion failed");
+	br_fdb_delete_locals_per_vlan(br);
+	return err;
+}
+
+int br_fdb_toggle_local_vlan_0(struct net_bridge *br, bool on,
+			       struct netlink_ext_ack *extack)
+{
+	if (!on)
+		return br_fdb_insert_locals_per_vlan(br, extack);
+
+	br_fdb_delete_locals_per_vlan(br);
+	return 0;
 }
 
 static bool __fdb_flush_matches(const struct net_bridge *br,
@@ -820,6 +932,7 @@ int br_fdb_test_addr(struct net_device *dev, unsigned char *addr)
 int br_fdb_fillbuf(struct net_bridge *br, void *buf,
 		   unsigned long maxnum, unsigned long skip)
 {
+	const struct net_bridge_port *dst;
 	struct net_bridge_fdb_entry *f;
 	struct __fdb_entry *fe = buf;
 	unsigned long delta;
@@ -836,7 +949,8 @@ int br_fdb_fillbuf(struct net_bridge *br, void *buf,
 			continue;
 
 		/* ignore pseudo entry for local MAC address */
-		if (!f->dst)
+		dst = READ_ONCE(f->dst);
+		if (!dst)
 			continue;
 
 		if (skip) {
@@ -848,8 +962,8 @@ int br_fdb_fillbuf(struct net_bridge *br, void *buf,
 		memcpy(fe->mac_addr, f->key.addr.addr, ETH_ALEN);
 
 		/* due to ABI compat need to split into hi/lo */
-		fe->port_no = f->dst->port_no;
-		fe->port_hi = f->dst->port_no >> 8;
+		fe->port_no = dst->port_no;
+		fe->port_hi = dst->port_no >> 8;
 
 		fe->is_local = test_bit(BR_FDB_LOCAL, &f->flags);
 		if (!test_bit(BR_FDB_STATIC, &f->flags)) {
@@ -975,9 +1089,11 @@ int br_fdb_dump(struct sk_buff *skb,
 
 	rcu_read_lock();
 	hlist_for_each_entry_rcu(f, &br->fdb_list, fdb_node) {
+		const struct net_bridge_port *dst = READ_ONCE(f->dst);
+
 		if (*idx < ctx->fdb_idx)
 			goto skip;
-		if (filter_dev && (!f->dst || f->dst->dev != filter_dev)) {
+		if (filter_dev && (!dst || dst->dev != filter_dev)) {
 			if (filter_dev != dev)
 				goto skip;
 			/* !f->dst is a special case for bridge
@@ -985,10 +1101,10 @@ int br_fdb_dump(struct sk_buff *skb,
 			 * Therefore need a little more filtering
 			 * we only want to dump the !f->dst case
 			 */
-			if (f->dst)
+			if (dst)
 				goto skip;
 		}
-		if (!filter_dev && f->dst)
+		if (!filter_dev && dst)
 			goto skip;
 
 		err = fdb_fill_info(skb, br, f,

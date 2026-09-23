@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only OR MIT
-/* Copyright 2021 Alyssa Rosenzweig <alyssa@rosenzweig.io> */
+/* Copyright 2021 Alyssa Rosenzweig */
 
 #ifndef __APPLE_DCP_INTERNAL_H__
 #define __APPLE_DCP_INTERNAL_H__
@@ -12,6 +12,7 @@
 #include <linux/phy/phy.h>
 #include <linux/platform_device.h>
 #include <linux/scatterlist.h>
+#include <linux/usb/typec_mux.h>
 
 #include "dptxep.h"
 #include "iomfb.h"
@@ -184,6 +185,7 @@ struct apple_dcp {
 	/* Current display mode */
 	bool during_modeset;
 	bool valid_mode;
+	bool use_timestamps;
 	struct dcp_set_digital_out_mode_req mode;
 
 	/* completion for active turning true */
@@ -251,6 +253,7 @@ struct apple_dcp {
 	/* these fields are output port specific */
 	struct phy *phy;
 	struct mux_control *xbar;
+	struct typec_mux *typec_mux;
 
 	struct gpio_desc *hdmi_hpd;
 	struct gpio_desc *hdmi_pwren;

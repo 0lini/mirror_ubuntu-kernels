@@ -3,7 +3,10 @@
 //! GPU events control structures & stamps
 
 use super::types::*;
-use crate::{default_zeroed, trivial_gpustruct};
+use crate::{
+    default_zeroed,
+    trivial_gpustruct, //
+};
 use core::sync::atomic::Ordering;
 
 pub(crate) mod raw {

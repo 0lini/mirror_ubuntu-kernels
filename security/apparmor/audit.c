@@ -67,7 +67,7 @@ static const char *const aa_class_names[] = {
 	"unknown",
 	"unknown",
 	"unknown",
-	"unknown",
+	"netv9_packet",
 	"X",
 	"dbus",
 };
@@ -230,7 +230,7 @@ int aa_audit_rule_init(u32 field, u32 op, char *rulestr, void **vrule, gfp_t gfp
 		return -EINVAL;
 	}
 
-	rule = kzalloc(sizeof(struct aa_audit_rule), gfp);
+	rule = kzalloc_obj(struct aa_audit_rule, gfp);
 
 	if (!rule)
 		return -ENOMEM;
@@ -367,11 +367,18 @@ static void audit_node_free(struct aa_audit_node *node)
 	kmem_cache_free(aa_audit_slab, node);
 }
 
+static void audit_node_free_rcu(struct rcu_head *head)
+{
+	struct aa_audit_node *node = container_of(head, typeof(*node), rcu);
+
+	audit_node_free(node);
+}
+
 void aa_audit_node_free_kref(struct kref *kref)
 {
 	struct aa_audit_node *node = container_of(kref, struct aa_audit_node,
 						  count);
-	audit_node_free(node);
+	call_rcu(&node->rcu, audit_node_free_rcu);
 }
 
 struct aa_audit_node *aa_dup_audit_data(struct apparmor_audit_data *orig,
@@ -521,6 +528,23 @@ struct aa_audit_node *aa_audit_cache_insert(struct aa_audit_cache *cache,
 	spin_unlock(&cache->lock);
 
 	return tmp;
+}
+
+/**
+ * aa_audit_cache_remove - remove an audit node from the cache
+ * @cache: cache to remove from
+ * @node: the audit node to remov from the cache
+ */
+void aa_audit_cache_remove(struct aa_audit_cache *cache,
+			   struct aa_audit_node *node)
+
+{
+	spin_lock(&cache->lock);
+	list_del_rcu(&node->list);
+	cache->size--;
+	aa_put_audit_node(node);
+	spin_unlock(&cache->lock);
+
 }
 
 void aa_audit_cache_update_ent(struct aa_audit_cache *cache,

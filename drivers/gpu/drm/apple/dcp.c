@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only OR MIT
-/* Copyright 2021 Alyssa Rosenzweig <alyssa@rosenzweig.io> */
+/* Copyright 2021 Alyssa Rosenzweig */
 
 #include <linux/align.h>
 #include <linux/bitmap.h>
@@ -21,6 +21,9 @@
 #include <linux/slab.h>
 #include <linux/soc/apple/rtkit.h>
 #include <linux/string.h>
+#include <linux/usb/typec_altmode.h>
+#include <linux/usb/typec_dp.h>
+#include <linux/usb/typec_mux.h>
 #include <linux/workqueue.h>
 
 #include <drm/drm_fb_dma_helper.h>
@@ -201,7 +204,6 @@ int dcp_set_crc(struct drm_crtc *crtc, bool enabled)
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(dcp_set_crc);
 
 /*
  * Helper to send a DRM vblank event. We do not know how call swap_submit_dcp
@@ -361,7 +363,6 @@ int dcp_crtc_atomic_check(struct drm_crtc *crtc, struct drm_atomic_state *state)
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(dcp_crtc_atomic_check);
 
 int dcp_get_connector_type(struct platform_device *pdev)
 {
@@ -369,7 +370,6 @@ int dcp_get_connector_type(struct platform_device *pdev)
 
 	return (dcp->connector_type);
 }
-EXPORT_SYMBOL_GPL(dcp_get_connector_type);
 
 #define DPTX_CONNECT_TIMEOUT msecs_to_jiffies(2000)
 
@@ -426,7 +426,7 @@ out_unlock:
 
 static void disconnected_hpd_event(struct apple_connector *con)
 {
-	if (con) {
+	if (con && con->connected) {
 		con->connected = 0;
 		drm_kms_helper_connector_hotplug_event(&con->base);
 	}
@@ -451,7 +451,6 @@ int dcp_dptx_connect_oob(struct platform_device *pdev, u32 port)
 	struct apple_dcp *dcp = platform_get_drvdata(pdev);
 	return dcp_dptx_connect(dcp, port);
 }
-EXPORT_SYMBOL_GPL(dcp_dptx_connect_oob);
 
 int dcp_dptx_disconnect_oob(struct platform_device *pdev, u32 port)
 {
@@ -461,10 +460,12 @@ int dcp_dptx_disconnect_oob(struct platform_device *pdev, u32 port)
 
 	if (dcp->avep)
 		av_service_disconnect(dcp);
-	dptxport_set_hpd(dcp->dptxport[port].service, false);
+
+	if (dcp->dptxport[port].enabled)
+		dptxport_set_hpd(dcp->dptxport[port].service, false);
+
 	return dcp_dptx_disconnect(dcp, port);
 }
-EXPORT_SYMBOL_GPL(dcp_dptx_disconnect_oob);
 
 static irqreturn_t dcp_dp2hdmi_hpd(int irq, void *data)
 {
@@ -499,7 +500,14 @@ void dcp_link(struct platform_device *pdev, struct apple_crtc *crtc,
 	dcp->crtc = crtc;
 	dcp->connector = connector;
 }
-EXPORT_SYMBOL_GPL(dcp_link);
+
+
+bool dcp_fw_compat_is_12_x(struct platform_device *pdev)
+{
+	struct apple_dcp *dcp = platform_get_drvdata(pdev);
+
+	return dcp->fw_compat == DCP_FIRMWARE_V_12_3;
+}
 
 int dcp_start(struct platform_device *pdev)
 {
@@ -572,7 +580,21 @@ int dcp_start(struct platform_device *pdev)
 
 	return ret;
 }
-EXPORT_SYMBOL(dcp_start);
+
+static void _dcp_poweroff(struct apple_dcp *dcp)
+{
+	switch (dcp->fw_compat) {
+	case DCP_FIRMWARE_V_12_3:
+		iomfb_poweroff_v12_3(dcp);
+		break;
+	case DCP_FIRMWARE_V_13_5:
+		iomfb_poweroff_v13_3(dcp);
+		break;
+	default:
+		WARN_ONCE(true, "Unexpected firmware version: %u\n", dcp->fw_compat);
+		break;
+	}
+}
 
 static int dcp_enable_dp2hdmi_hpd(struct apple_dcp *dcp)
 {
@@ -583,6 +605,8 @@ static int dcp_enable_dp2hdmi_hpd(struct apple_dcp *dcp)
 
 		if (connected)
 			dcp_dptx_connect(dcp, 0);
+		else
+			_dcp_poweroff(dcp);
 	}
 
 	if (dcp->hdmi_hpd_irq)
@@ -615,7 +639,6 @@ int dcp_wait_ready(struct platform_device *pdev, u64 timeout)
 
 	return dcp->active ? 0 : -ETIMEDOUT;
 }
-EXPORT_SYMBOL(dcp_wait_ready);
 
 static void __maybe_unused dcp_sleep(struct apple_dcp *dcp)
 {
@@ -659,7 +682,6 @@ void dcp_poweron(struct platform_device *pdev)
 	if (dcp->avep)
 		av_service_connect(dcp);
 }
-EXPORT_SYMBOL(dcp_poweron);
 
 void dcp_poweroff(struct platform_device *pdev)
 {
@@ -668,17 +690,7 @@ void dcp_poweroff(struct platform_device *pdev)
 	if (dcp->avep)
 		av_service_disconnect(dcp);
 
-	switch (dcp->fw_compat) {
-	case DCP_FIRMWARE_V_12_3:
-		iomfb_poweroff_v12_3(dcp);
-		break;
-	case DCP_FIRMWARE_V_13_5:
-		iomfb_poweroff_v13_3(dcp);
-		break;
-	default:
-		WARN_ONCE(true, "Unexpected firmware version: %u\n", dcp->fw_compat);
-		break;
-	}
+	_dcp_poweroff(dcp);
 
 	if (dcp->hdmi_hpd) {
 		bool connected = gpiod_get_value_cansleep(dcp->hdmi_hpd);
@@ -688,7 +700,6 @@ void dcp_poweroff(struct platform_device *pdev)
 		}
 	}
 }
-EXPORT_SYMBOL(dcp_poweroff);
 
 static void dcp_work_register_backlight(struct work_struct *work)
 {
@@ -724,17 +735,15 @@ static void dcp_work_update_backlight(struct work_struct *work)
 static int dcp_create_piodma_iommu_dev(struct apple_dcp *dcp)
 {
 	int ret;
-	struct device_node *node = of_get_child_by_name(dcp->dev->of_node, "piodma");
+	struct device_node *node __free(device_node) = of_get_child_by_name(dcp->dev->of_node, "piodma");
 
 	if (!node)
 		return dev_err_probe(dcp->dev, -ENODEV,
 				     "Failed to get piodma child DT node\n");
 
 	dcp->piodma = of_platform_device_create(node, NULL, dcp->dev);
-	if (!dcp->piodma) {
-		of_node_put(node);
+	if (!dcp->piodma)
 		return dev_err_probe(dcp->dev, -ENODEV, "Failed to create piodma pdev for %pOF\n", node);
-	}
 
 	ret = dma_set_mask_and_coherent(&dcp->piodma->dev, DMA_BIT_MASK(42));
 	if (ret)
@@ -746,7 +755,6 @@ static int dcp_create_piodma_iommu_dev(struct apple_dcp *dcp)
 			"Failed to configure IOMMU child DMA\n");
 		goto err_destroy_pdev;
 	}
-	of_node_put(node);
 
 	dcp->iommu_dom = iommu_get_domain_for_dev(&dcp->piodma->dev);
 	if (IS_ERR(dcp->iommu_dom)) {
@@ -759,7 +767,6 @@ static int dcp_create_piodma_iommu_dev(struct apple_dcp *dcp)
 
 	return 0;
 err_destroy_pdev:
-	of_node_put(node);
 	of_platform_device_destroy(&dcp->piodma->dev, NULL);
 	return ret;
 }
@@ -1046,7 +1053,7 @@ static int dcp_comp_bind(struct device *dev, struct device *main, void *data)
 		dcp->connector_type = DRM_MODE_CONNECTOR_Unknown;
 
 	ret = dcp_create_piodma_iommu_dev(dcp);
-	if (ret)
+	if (ret || !dcp->iommu_dom)
 		return dev_err_probe(dev, ret,
 				"Failed to created PIODMA iommu child device");
 
@@ -1100,6 +1107,8 @@ static void dcp_comp_unbind(struct device *dev, struct device *main, void *data)
 
 	if (dcp->hdmi_hpd_irq)
 		disable_irq(dcp->hdmi_hpd_irq);
+
+	typec_mux_put(dcp->typec_mux);
 
 	if (dcp->avep) {
 		av_service_disconnect(dcp);
@@ -1238,6 +1247,27 @@ static int dcp_platform_probe(struct platform_device *pdev)
 			ret = mux_control_select(dcp->xbar, mux_index);
 			if (ret)
 				dev_warn(dev, "mux_control_select failed: %d\n", ret);
+
+			/*
+			 * Switch atcphy to DP-only. should move to a Macbook Pro
+			 * 14-/16-inch specific DP-to-HDMI drm_bridge.
+			 */
+			dcp->typec_mux = fwnode_typec_mux_get(dev_fwnode(dcp->dev));
+			if (!IS_ERR_OR_NULL(dcp->typec_mux)) {
+				struct typec_altmode alt = {
+					.svid = USB_TYPEC_DP_SID,
+				};
+				struct typec_mux_state state = {
+					.alt = &alt,
+					.mode = TYPEC_DP_STATE_C,
+				};
+				int ret = typec_mux_set(dcp->typec_mux, &state);
+				dev_info(dev, "typec_mux_set() returned: %d\n", ret);
+			} else {
+				dev_info(dev, "fwnode_typec_mux_get() returned: %ld\n",
+						IS_ERR(dcp->typec_mux) ? PTR_ERR(dcp->typec_mux) : 0);
+				dcp->typec_mux = NULL;
+			}
 		}
 	}
 
@@ -1282,13 +1312,6 @@ static int dcp_platform_resume(struct device *dev)
 
 	if (dcp->hdmi_hpd_irq)
 		enable_irq(dcp->hdmi_hpd_irq);
-
-	if (dcp->hdmi_hpd) {
-		bool connected = gpiod_get_value_cansleep(dcp->hdmi_hpd);
-		dev_info(dcp->dev, "resume: HPD connected:%d\n", connected);
-		if (connected)
-			dcp_dptx_connect(dcp, 0);
-	}
 
 	if (dcp->avep)
 		av_service_connect(dcp);
@@ -1336,28 +1359,12 @@ static struct platform_driver apple_platform_driver = {
 	},
 };
 
-static int __init apple_dcp_register(void)
+void __init dcp_register(void)
 {
-	if (drm_firmware_drivers_only())
-		return -ENODEV;
-
-#if IS_ENABLED(CONFIG_DRM_APPLE_AUDIO)
-	dcp_audio_register();
-#endif
-	return platform_driver_register(&apple_platform_driver);
+	platform_driver_register(&apple_platform_driver);
 }
 
-static void __exit apple_dcp_unregister(void)
+void __exit dcp_unregister(void)
 {
 	platform_driver_unregister(&apple_platform_driver);
-#if IS_ENABLED(CONFIG_DRM_APPLE_AUDIO)
-	dcp_audio_unregister();
-#endif
 }
-
-module_init(apple_dcp_register);
-module_exit(apple_dcp_unregister);
-
-MODULE_AUTHOR("Alyssa Rosenzweig <alyssa@rosenzweig.io>");
-MODULE_DESCRIPTION("Apple Display Controller DRM driver");
-MODULE_LICENSE("Dual MIT/GPL");

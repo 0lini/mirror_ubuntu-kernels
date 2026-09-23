@@ -23,7 +23,10 @@
 //! related to slightly non-compliant rounding.
 
 use core::ops;
-use kernel::{of, prelude::*};
+use kernel::{
+    of,
+    prelude::*, //
+};
 
 /// An IEEE754-compatible floating point number implemented in software.
 #[derive(Default, Debug, Copy, Clone)]

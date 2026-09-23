@@ -32,8 +32,13 @@
 // ============ end asahi dowanstream features ============
 //
 // Stable since Rust 1.79.0.
+#![feature(generic_nonzero)]
 #![feature(inline_const)]
 #![feature(pointer_is_aligned)]
+#![feature(slice_ptr_len)]
+//
+// Stable since Rust 1.80.0.
+#![feature(slice_flatten)]
 //
 // Stable since Rust 1.81.0.
 #![feature(lint_reasons)]
@@ -44,8 +49,13 @@
 // Stable since Rust 1.83.0.
 #![feature(const_maybe_uninit_as_mut_ptr)]
 #![feature(const_mut_refs)]
+#![feature(const_option)]
 #![feature(const_ptr_write)]
 #![feature(const_refs_to_cell)]
+#![feature(const_refs_to_static)]
+//
+// Stable since Rust 1.84.0.
+#![feature(strict_provenance)]
 //
 // Expected to become stable.
 #![feature(arbitrary_self_types)]
@@ -79,6 +89,7 @@ pub mod addr;
 pub mod alloc;
 #[cfg(CONFIG_AUXILIARY_BUS)]
 pub mod auxiliary;
+pub mod bitmap;
 pub mod bits;
 #[cfg(CONFIG_BLOCK)]
 pub mod block;
@@ -93,6 +104,7 @@ pub mod cpu;
 pub mod cpufreq;
 pub mod cpumask;
 pub mod cred;
+pub mod debugfs;
 #[cfg(CONFIG_DEV_COREDUMP)]
 pub mod devcoredump;
 pub mod device;
@@ -111,11 +123,20 @@ pub mod faux;
 pub mod firmware;
 pub mod fmt;
 pub mod fs;
+#[cfg(CONFIG_I2C = "y")]
+pub mod i2c;
+pub mod id_pool;
 #[cfg(CONFIG_IIO)]
 pub mod iio;
+#[doc(hidden)]
+pub mod impl_flags;
 pub mod init;
 pub mod io;
 pub mod ioctl;
+pub mod iommu;
+pub mod iosys_map;
+pub mod iov;
+pub mod irq;
 pub mod jump_label;
 #[cfg(CONFIG_KUNIT)]
 pub mod kunit;
@@ -126,6 +147,7 @@ pub mod mm;
 pub mod module_param;
 #[cfg(CONFIG_NET)]
 pub mod net;
+pub mod num;
 pub mod of;
 #[cfg(CONFIG_PM_OPP)]
 pub mod opp;
@@ -136,13 +158,19 @@ pub mod pid_namespace;
 pub mod platform;
 pub mod prelude;
 pub mod print;
+pub mod processor;
+pub mod ptr;
+#[cfg(CONFIG_RUST_PWM_ABSTRACTIONS)]
+pub mod pwm;
 pub mod rbtree;
 pub mod regulator;
 pub mod revocable;
+pub mod safety;
 pub mod scatterlist;
 pub mod security;
 pub mod seq_file;
 pub mod sizes;
+pub mod slice;
 pub mod soc;
 mod static_assert;
 #[doc(hidden)]
@@ -155,6 +183,8 @@ pub mod tracepoint;
 pub mod transmute;
 pub mod types;
 pub mod uaccess;
+#[cfg(CONFIG_USB = "y")]
+pub mod usb;
 pub mod workqueue;
 pub mod xarray;
 
@@ -234,7 +264,7 @@ impl ThisModule {
     }
 }
 
-#[cfg(not(any(testlib, test)))]
+#[cfg(not(testlib))]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
     pr_emerg!("{}\n", info);

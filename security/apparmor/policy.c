@@ -81,12 +81,14 @@
 #include "include/file.h"
 #include "include/ipc.h"
 #include "include/match.h"
+#include "include/net.h"
 #include "include/path.h"
 #include "include/policy.h"
 #include "include/policy_ns.h"
 #include "include/policy_unpack.h"
 #include "include/resource.h"
 
+int aa_skb_packet_mediation = IS_ENABLED(CONFIG_SECURITY_APPARMOR_PACKET_MEDIATION);
 int unprivileged_userns_apparmor_policy = 1;
 int aa_unprivileged_userns_restricted = IS_ENABLED(CONFIG_SECURITY_APPARMOR_RESTRICT_USERNS);
 int aa_unprivileged_userns_restricted_force;
@@ -135,7 +137,7 @@ void aa_pdb_free_kref(struct kref *kref)
 
 struct aa_policydb *aa_alloc_pdb(gfp_t gfp)
 {
-	struct aa_policydb *pdb = kzalloc(sizeof(struct aa_policydb), gfp);
+	struct aa_policydb *pdb = kzalloc_obj(struct aa_policydb, gfp);
 
 	if (!pdb)
 		return NULL;
@@ -236,6 +238,13 @@ static void __remove_profile(struct aa_profile *profile)
 	aa_label_remove(&profile->label);
 	__aafs_profile_rmdir(profile);
 	__list_remove_profile(profile);
+	/* rawdata is only ever referenced by fs lookup, that is no
+	 * longer possible here, so put the reference to it. This will
+	 * enable the rawdata to be freed if for some reason the profile
+	 * is pinned and going to live for a while.
+	 */
+	aa_put_profile_loaddata(profile->rawdata);
+	profile->rawdata = NULL;
 }
 
 /**
@@ -303,7 +312,7 @@ struct aa_ruleset *aa_alloc_ruleset(gfp_t gfp)
 {
 	struct aa_ruleset *rules;
 
-	rules = kzalloc(sizeof(*rules), gfp);
+	rules = kzalloc_obj(*rules, gfp);
 
 	return rules;
 }
@@ -387,7 +396,7 @@ struct aa_profile *aa_alloc_profile(const char *hname, struct aa_proxy *proxy,
 	 * this adds space for a single ruleset in the rules section of the
 	 * label
 	 */
-	profile = kzalloc(struct_size(profile, label.rules, 1), gfp);
+	profile = kzalloc_flex(*profile, label.rules, 1, gfp);
 	if (!profile)
 		return NULL;
 
@@ -751,24 +760,27 @@ struct aa_profile *aa_new_learning_profile(struct aa_profile *parent, bool hat,
 	struct aa_profile *p, *profile;
 	const char *bname;
 	char *name = NULL;
+	size_t name_sz;
 
 	AA_BUG(!parent);
 
 	if (base) {
-		name = kmalloc(strlen(parent->base.hname) + 8 + strlen(base),
-			       gfp);
+		name_sz = strlen(parent->base.hname) + 8 + strlen(base);
+		name = kmalloc(name_sz, gfp);
 		if (name) {
-			sprintf(name, "%s//null-%s", parent->base.hname, base);
+			snprintf(name, name_sz, "%s//null-%s",
+				 parent->base.hname, base);
 			goto name;
 		}
 		/* fall through to try shorter uniq */
 	}
 
-	name = kmalloc(strlen(parent->base.hname) + 2 + 7 + 8, gfp);
+	name_sz = strlen(parent->base.hname) + 2 + 7 + 8;
+	name = kmalloc(name_sz, gfp);
 	if (!name)
 		return NULL;
-	sprintf(name, "%s//null-%x", parent->base.hname,
-		atomic_inc_return(&parent->ns->uniq_null));
+	snprintf(name, name_sz, "%s//null-%x", parent->base.hname,
+		 atomic_inc_return(&parent->ns->uniq_null));
 
 name:
 	/* lookup to see if this is a dup creation */
@@ -1164,6 +1176,8 @@ static struct aa_profile *update_to_newest_parent(struct aa_profile *new)
  * @label: label that is attempting to load/replace policy
  * @mask: permission mask
  * @udata: serialized data stream  (NOT NULL)
+ * @compressed_profile: The userspace-provided compressed profile. May be NULL
+ * @compressed_size: If compressed_data is not NULL, the compressed data size
  *
  * unpack and replace a profile on the profile list and uses of that profile
  * by any task creds via invalidating the old version of the profile, which
@@ -1173,7 +1187,8 @@ static struct aa_profile *update_to_newest_parent(struct aa_profile *new)
  * Returns: size of data consumed else error code on failure.
  */
 ssize_t aa_replace_profiles(struct aa_ns *policy_ns, struct aa_label *label,
-			    u32 mask, struct aa_loaddata *udata)
+			    u32 mask, struct aa_loaddata *udata,
+			    char *compressed_profile, size_t compressed_size)
 {
 	const char *ns_name = NULL, *info = NULL;
 	struct aa_ns *ns = NULL;
@@ -1186,7 +1201,7 @@ ssize_t aa_replace_profiles(struct aa_ns *policy_ns, struct aa_label *label,
 	op = mask & AA_MAY_REPLACE_POLICY ? OP_PROF_REPL : OP_PROF_LOAD;
 	aa_get_profile_loaddata(udata);
 	/* released below */
-	error = aa_unpack(udata, &lh, &ns_name);
+	error = aa_unpack(udata, &lh, &ns_name, compressed_profile, compressed_size);
 	if (error)
 		goto out;
 
@@ -1385,13 +1400,15 @@ ssize_t aa_replace_profiles(struct aa_ns *policy_ns, struct aa_label *label,
 	mutex_unlock(&ns->lock);
 
 out:
+	ssize_t udata_sz = udata->size;
+
 	aa_put_ns(ns);
 	aa_put_profile_loaddata(udata);
 	kfree(ns_name);
 
 	if (error)
 		return error;
-	return udata->size;
+	return udata_sz;
 
 fail_lock:
 	mutex_unlock(&ns->lock);

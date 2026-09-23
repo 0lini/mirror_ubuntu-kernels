@@ -5,6 +5,7 @@
 //!
 //! Copyright (C) The Asahi Linux Contributors
 
+use core::fmt;
 use core::sync::atomic::{AtomicU32, Ordering};
 use core::{mem, ptr, slice};
 
@@ -22,6 +23,24 @@ use kernel::{
 };
 
 use pin_init::Zeroable;
+
+/// An unaligned u32 type.
+///
+/// This is useful to avoid having to pack firmware structures entirely, since that is incompatible
+/// with `#[derive(Debug)]` and atomics.
+#[derive(Copy, Clone, Default)]
+#[repr(C, packed(1))]
+pub(crate) struct U32(pub(crate) u32);
+
+// SAFETY: U32 is zeroable just like u32
+unsafe impl Zeroable for U32 {}
+
+impl fmt::Debug for U32 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let v = self.0;
+        f.write_fmt(format_args!("{:#x}", v))
+    }
+}
 
 const EPIC_SUBTYPE_WRAPPED_CALL: u16 = 0x20;
 const CALLTYPE_AUDIO_ATTACH_DEVICE: u32 = 0xc3000002;
@@ -94,7 +113,7 @@ impl AudioAttachDevice {
     }
 }
 
-#[repr(C, packed)]
+#[repr(C, packed(4))]
 #[derive(Clone, Copy, Default)]
 struct LpaiChannelConfig {
     unk1: u32,
@@ -103,7 +122,7 @@ struct LpaiChannelConfig {
     unk4: u32,
 }
 
-#[repr(C, packed)]
+#[repr(C, packed(4))]
 #[derive(Debug, Copy, Clone)]
 struct PDMConfig {
     bytes_per_sample: u32,
@@ -120,21 +139,26 @@ struct PDMConfig {
     ratio2: u8,
     ratio3: u8,
     _pad0: u8,
-    filter_lengths: u32,
-    coeff_bulk: u32,
+    filter_lengths: U32,
+    coeff_bulk: U32,
     coeffs: [u8; PDM_NUM_COEFFS * mem::size_of::<u32>()],
-    unk3: u32,
-    mic_turn_on_time_ms: u32,
-    _zero0: u64,
-    _zero1: u64,
-    unk4: u32,
-    mic_settle_time_ms: u32,
+    unk3: U32,
+    mic_turn_on_time_ms: U32,
+    _zero0: [u8; 8],
+    _zero1: [u8; 8],
+    unk4: U32,
+    mic_settle_time_ms: U32,
     _zero2: [u8; 69], // ?????
+    _pad_extra: u8, // extra padding to increase the struct size to multiple of mem::size_of::<u32>()
 }
+// PDMConfig is intended to use `#[repr(C, packed)]` but this
+// conflicts ith pin_init. Instead just ensure that it has the same size as if
+// it where packed.
+static_assert!(mem::size_of::<PDMConfig>() == 36 + 14 + (120 * 4) + 32 + 69 + 1);
 
 unsafe impl Zeroable for PDMConfig {}
 
-#[repr(C, packed)]
+#[repr(C, packed(4))]
 #[derive(Debug, Copy, Clone)]
 struct DecimatorConfig {
     latency: u32,
@@ -146,16 +170,20 @@ struct DecimatorConfig {
     coeff_bulk: u32,
     coeffs: [u8; PDM_NUM_COEFFS * mem::size_of::<u32>()],
 }
+// DecimatorConfig is intended to use `#[repr(C, packed)]` but this
+// conflicts ith pin_init. Instead just ensure that it has the same size as if
+// it where packed.
+static_assert!(mem::size_of::<DecimatorConfig>() == 16 + (120 * 4));
 
 unsafe impl Zeroable for DecimatorConfig {}
 
-#[repr(C, packed)]
+#[repr(C, packed(4))]
 #[derive(Clone, Copy, Default, Debug)]
 struct PowerSetting {
     dev_id: u32,
     cookie: u32,
     _unk0: u32,
-    _zero0: u64,
+    _zero0: [u8; 8],
     target_pstate: u32,
     unk1: u32,
     _zero1: [u8; 20],
@@ -173,21 +201,36 @@ impl PowerSetting {
     }
 }
 
-#[repr(C, packed)]
+#[repr(C)]
 #[derive(Clone, Copy, Default, Debug)]
 struct AudioSetDeviceProp<T> {
     _zero0: u32,
     unk0: u32,
     calltype: u32,
-    _zero1: u64,
-    _zero2: u64,
+    _zero1: [u8; 8],
+    _zero2: [u8; 8],
     _pad0: u32,
-    len: u64,
+    len: u32,
+    _pad1: u32,
     dev_id: u32,
     modifier: u32,
     len2: u32,
     data: T,
 }
+// AudioSetDeviceProp<T> is intended to use `#[repr(C, packed)]` but this
+// conflicts ith pin_init. Instead just ensure that it has the same size as if
+// it where packed.
+static_assert!(mem::size_of::<AudioSetDeviceProp<PDMConfig>>() == 52 + mem::size_of::<PDMConfig>());
+static_assert!(
+    mem::size_of::<AudioSetDeviceProp<DecimatorConfig>>() == 52 + mem::size_of::<DecimatorConfig>()
+);
+static_assert!(
+    mem::size_of::<AudioSetDeviceProp<LpaiChannelConfig>>()
+        == 52 + mem::size_of::<LpaiChannelConfig>()
+);
+static_assert!(
+    mem::size_of::<AudioSetDeviceProp<PowerSetting>>() == 52 + mem::size_of::<PowerSetting>()
+);
 
 impl<T: Default> AudioSetDeviceProp<T> {
     fn new(dev_id: u32, modifier: u32, data: T) -> AudioSetDeviceProp<T> {
@@ -196,7 +239,7 @@ impl<T: Default> AudioSetDeviceProp<T> {
             calltype: CALLTYPE_AUDIO_SET_PROP,
             dev_id,
             modifier,
-            len: mem::size_of::<T>() as u64 + 0x30,
+            len: mem::size_of::<T>() as u32 + 0x30,
             len2: mem::size_of::<T>() as u32,
             data,
             ..AudioSetDeviceProp::default()
@@ -221,7 +264,7 @@ impl<T: Zeroable> AudioSetDeviceProp<T> {
                 calltype: CALLTYPE_AUDIO_SET_PROP,
                 dev_id,
                 modifier,
-                len: mem::size_of::<T>() as u64 + 0x30,
+                len: mem::size_of::<T>() as u32 + 0x30,
                 len2: mem::size_of::<T>() as u32,
                 data <- data,
                 ..Zeroable::init_zeroed()
@@ -271,13 +314,13 @@ impl SndSocAopData {
             ratio1: DECIMATION_RATIOS[0],
             ratio2: DECIMATION_RATIOS[1],
             ratio3: DECIMATION_RATIOS[2],
-            filter_lengths: FILTER_LENGTHS,
-            coeff_bulk: PDM_NUM_COEFFS as u32,
+            filter_lengths: U32(FILTER_LENGTHS),
+            coeff_bulk: U32(PDM_NUM_COEFFS as u32),
             coeffs: COEFFICIENTS,
-            unk3: 1,
-            mic_turn_on_time_ms: 20,
-            unk4: 1,
-            mic_settle_time_ms: 50,
+            unk3: U32(1),
+            mic_turn_on_time_ms: U32(20),
+            unk4: U32(1),
+            mic_settle_time_ms: U32(50),
             ..Zeroable::init_zeroed()
         });
         let set_prop = AudioSetDeviceProp::<PDMConfig>::try_init(AUDIO_DEV_PDM0, 200, pdm_cfg);
@@ -396,9 +439,7 @@ impl SndSocAopData {
 struct SndSocAopDriver(*mut bindings::snd_card);
 
 fn copy_str(target: &mut [u8], source: &[u8]) {
-    for i in 0..source.len() {
-        target[i] = source[i];
-    }
+    target[..source.len()].copy_from_slice(source)
 }
 
 unsafe fn dmaengine_slave_config(
@@ -570,47 +611,28 @@ impl SndSocAopDriver {
             .property_read::<CString>(c_str!("apple,machine-kind"))
             .required_by(&data.dev)?;
         unsafe {
-            let name = b"aop_audio\0";
-            let target = (*this.0).driver.as_mut();
-            copy_str(target, name.as_ref());
+            copy_str(&mut (*this.0).driver, c"aop_audio".to_bytes_with_nul());
         }
+        let id_str = CString::try_from_fmt(fmt!("Apple{}HPAI", *chassis))?;
         unsafe {
-            let prefix = b"Apple";
-            let target = (*this.0).id.as_mut();
-            copy_str(target, prefix.as_ref());
-            let mut ptr = prefix.len();
-            copy_str(&mut target[ptr..], chassis.as_bytes_with_nul());
-            ptr += chassis.len();
-            let suffix = b"HPAI\0";
-            copy_str(&mut target[ptr..], suffix);
+            copy_str(&mut (*this.0).id, id_str.to_bytes_with_nul());
         }
-        let longname_suffix = b"High-Power Audio Interface\0";
-        let mut machine_name = KVec::with_capacity(
-            chassis.len() + 2 + machine_kind.len() + longname_suffix.len(),
-            GFP_KERNEL,
-        )?;
-        machine_name.extend_from_slice(machine_kind.as_bytes_with_nul(), GFP_KERNEL)?;
-        let last_item = machine_name.len() - 1;
-        machine_name[last_item] = b' ';
-        machine_name.extend_from_slice(chassis.as_bytes_with_nul(), GFP_KERNEL)?;
-        let last_item = machine_name.len() - 1;
-        machine_name[last_item] = b' ';
+        let shortname = CString::try_from_fmt(fmt!("{} {} HPAI", *machine_kind, *chassis))?;
         unsafe {
-            let target = (*this.0).shortname.as_mut();
-            copy_str(target, machine_name.as_ref());
-            let ptr = machine_name.len();
-            let suffix = b"HPAI\0";
-            copy_str(&mut target[ptr..], suffix);
+            copy_str(&mut (*this.0).shortname, shortname.to_bytes_with_nul());
         }
-        machine_name.extend_from_slice(longname_suffix, GFP_KERNEL)?;
+        let longname = CString::try_from_fmt(fmt!(
+            "{} {} High-Power Audio Interface",
+            *machine_kind,
+            *chassis
+        ))?;
         unsafe {
-            let target = (*this.0).longname.as_mut();
-            copy_str(target, machine_name.as_ref());
+            copy_str(&mut (*this.0).longname, longname.to_bytes_with_nul());
         }
 
         let mut pcm = ptr::null_mut();
         let ret =
-            unsafe { bindings::snd_pcm_new(this.0, machine_name.as_ptr() as _, 0, 0, 1, &mut pcm) };
+            unsafe { bindings::snd_pcm_new(this.0, longname.as_ptr() as _, 0, 0, 1, &mut pcm) };
         if ret < 0 {
             dev_err!(data.dev, "Unable to allocate PCM device");
             return Err(Error::from_errno(ret));
@@ -628,8 +650,7 @@ impl SndSocAopDriver {
             (*pcm).private_data = data.clone().into_foreign() as _;
             (*pcm).private_free = Some(aop_pcm_free_private);
             (*pcm).info_flags = 0;
-            let name = c_str!("aop_audio");
-            copy_str((*pcm).name.as_mut(), name.as_ref());
+            copy_str(&mut (*pcm).name, c"aop_audio".to_bytes_with_nul());
         }
 
         let ret = unsafe { bindings::snd_card_register(this.0) };
@@ -666,10 +687,7 @@ impl platform::Driver for SndSocAopDriver {
 
     const OF_ID_TABLE: Option<of::IdTable<()>> = Some(&OF_TABLE);
 
-    fn probe(
-        pdev: &platform::Device<Core>,
-        _info: Option<&()>,
-    ) -> Result<Pin<KBox<SndSocAopDriver>>> {
+    fn probe(pdev: &platform::Device<Core>, _info: Option<&()>) -> impl PinInit<Self, Error> {
         let dev = ARef::<device::Device>::from(pdev.as_ref());
         let parent = pdev.as_ref().parent().unwrap();
         // SAFETY: our parent is AOP, and AopDriver is repr(transparent) for Arc<dyn Aop>
@@ -692,7 +710,7 @@ impl platform::Driver for SndSocAopDriver {
         data.set_lpai_channel_cfg()?;
         data.set_pdm_config()?;
         data.set_decimator_config()?;
-        Ok(Box::pin(SndSocAopDriver::new(data)?, GFP_KERNEL)?)
+        Ok(Self::new(data)?)
     }
 }
 

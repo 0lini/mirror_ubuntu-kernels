@@ -5,7 +5,10 @@
 use super::event;
 use super::types::*;
 use crate::event::EventValue;
-use crate::{default_zeroed, trivial_gpustruct};
+use crate::{
+    default_zeroed,
+    trivial_gpustruct, //
+};
 use kernel::sync::Arc;
 
 #[derive(Debug)]

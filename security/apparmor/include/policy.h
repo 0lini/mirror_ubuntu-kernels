@@ -26,7 +26,6 @@
 #include "file.h"
 #include "lib.h"
 #include "label.h"
-#include "net.h"
 #include "perms.h"
 #include "resource.h"
 
@@ -39,6 +38,7 @@ extern int aa_unprivileged_userns_restricted_force;
 extern int aa_unprivileged_userns_restricted_complain;
 extern int aa_unprivileged_unconfined_restricted;
 extern int aa_unprivileged_uring_restricted;
+extern int aa_skb_packet_mediation;
 
 extern const char *const aa_profile_mode_names[];
 #define APPARMOR_MODE_NAMES_MAX_INDEX 4
@@ -96,19 +96,20 @@ struct aa_tags_struct {
 		u32 *table;		/* indexes into headers & strs */
 	} sets;
 	struct {
-		u32 size;	/* number of headres == num of strs */
+		u32 size;		/* number of headers == num of strs */
 		struct aa_tags_header *table;
 	} hdrs;
 	struct aa_str_table strs;
 };
 
 /* struct aa_policydb - match engine for a policy
- * count: refcount for the pdb
- * dfa: dfa pattern match
- * perms: table of permissions
- * strs: table of strings, index by x
- * tags: table of tags that perms->tag indexes
- * tags_count: numer of tagsets
+ * @count: refcount for the pdb
+ * @dfa: dfa pattern match
+ * @perms: table of permissions
+ * @size: number of entries in @perms
+ * @trans: table of strings, index by x
+ * @tags: table of tags that perms->tag indexes
+ * @start:_states to start in for each class
  * start: set of start states for the different classes of data
  */
 struct aa_policydb {
@@ -316,7 +317,8 @@ struct aa_profile *aa_fqlookupn_profile(struct aa_label *base,
 					const char *fqname, size_t n);
 
 ssize_t aa_replace_profiles(struct aa_ns *view, struct aa_label *label,
-			    u32 mask, struct aa_loaddata *udata);
+			    u32 mask, struct aa_loaddata *udata,
+			    char *compressed_profile, size_t compressed_size);
 ssize_t aa_remove_profiles(struct aa_ns *view, struct aa_label *label,
 			   char *name, size_t size);
 void __aa_profile_list_release(struct list_head *head);

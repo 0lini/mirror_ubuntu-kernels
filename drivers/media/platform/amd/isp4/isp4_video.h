@@ -6,30 +6,10 @@
 #ifndef _ISP4_VIDEO_H_
 #define _ISP4_VIDEO_H_
 
-#include <linux/mutex.h>
-#include <media/videobuf2-memops.h>
 #include <media/v4l2-dev.h>
+#include <media/videobuf2-memops.h>
+
 #include "isp4_interface.h"
-
-enum isp4vid_buf_done_status {
-	/* It means no corresponding image buf in fw response */
-	ISP4VID_BUF_DONE_STATUS_ABSENT,
-	ISP4VID_BUF_DONE_STATUS_SUCCESS,
-	ISP4VID_BUF_DONE_STATUS_FAILED
-};
-
-struct isp4vid_buf_done_info {
-	enum isp4vid_buf_done_status status;
-	struct isp4if_img_buf_info buf;
-};
-
-/* call back parameter for CB_EVT_ID_FRAME_DONE */
-struct isp4vid_framedone_param {
-	s32 poc;
-	s32 cam_id;
-	s64 time_stamp;
-	struct isp4vid_buf_done_info preview;
-};
 
 struct isp4vid_capture_buffer {
 	/*
@@ -41,13 +21,9 @@ struct isp4vid_capture_buffer {
 	struct vb2_v4l2_buffer vb2;
 	struct isp4if_img_buf_info img_buf;
 	struct list_head list;
-};
-
-struct isp4vid_dev;
-
-struct isp4vid_ops {
-	int (*send_buffer)(struct v4l2_subdev *sd,
-			   struct isp4if_img_buf_info *img_buf);
+	struct dma_buf *dbuf;
+	void *bo;
+	u64 gpu_addr;
 };
 
 struct isp4vid_dev {
@@ -65,23 +41,17 @@ struct isp4vid_dev {
 
 	u32 sequence;
 	bool stream_started;
-	struct task_struct *kthread;
 
-	struct media_pipeline pipe;
 	struct device *dev;
 	struct v4l2_subdev *isp_sdev;
 	struct v4l2_fract timeperframe;
-
-	/* Callback operations */
-	const struct isp4vid_ops *ops;
 };
 
-int isp4vid_dev_init(struct isp4vid_dev *isp_vdev,
-		     struct v4l2_subdev *isp_sdev,
-		     const struct isp4vid_ops *ops);
+int isp4vid_dev_init(struct isp4vid_dev *isp_vdev, struct v4l2_subdev *isp_sd);
 
 void isp4vid_dev_deinit(struct isp4vid_dev *isp_vdev);
 
-s32 isp4vid_notify(void *cb_ctx, struct isp4vid_framedone_param *evt_param);
+void isp4vid_handle_frame_done(struct isp4vid_dev *isp_vdev,
+			       const struct isp4if_img_buf_info *img_buf);
 
-#endif
+#endif /* _ISP4_VIDEO_H_ */

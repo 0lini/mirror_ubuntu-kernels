@@ -6,7 +6,6 @@
 
 use crate::{
     bindings,
-    error::{to_result, Result},
     prelude::*,
     sync::LockClassKey,
     types::Opaque,
@@ -66,9 +65,9 @@ pub trait RawDmaFence: private::Sealed {
     }
 
     /// Signal completion of this fence
-    fn signal(&self) -> Result {
+    fn signal(&self) {
         // SAFETY: Safe to call on any valid dma_fence object
-        to_result(unsafe { bindings::dma_fence_signal(self.raw()) })
+        unsafe { bindings::dma_fence_signal(self.raw()) };
     }
 
     /// Set the error flag on this fence
@@ -404,10 +403,12 @@ impl FenceContexts {
 
         // SAFETY: krealloc is always safe to call like this
         let p = unsafe {
-            bindings::krealloc(
+            bindings::krealloc_node_align(
                 core::ptr::null_mut(),
                 FenceObject::<T>::SIZE,
+                1,
                 bindings::GFP_KERNEL | bindings::__GFP_ZERO,
+                bindings::NUMA_NO_NODE,
             ) as *mut FenceObject<T>
         };
 

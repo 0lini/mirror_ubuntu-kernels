@@ -300,8 +300,12 @@ static int path_name(const char *op, const struct cred *subj_cred,
 	const char *info = NULL;
 	int error;
 
-	error = aa_path_name(path, flags, buffer, name, &info,
-			     labels_profile(label)->disconnected);
+	/* don't reaudit files closed during inheritance */
+	if (unlikely(path->dentry == aa_null.dentry))
+		error = -EACCES;
+	else
+		error = aa_path_name(path, flags, buffer, name, &info,
+				     labels_profile(label)->disconnected);
 	if (error) {
 		fn_for_each_confined(label, profile,
 			aa_audit_file(subj_cred,
@@ -662,7 +666,7 @@ static int __path_perm(const char *op, const struct cred *subj_cred,
 			profile_path_perm(op, subj_cred, profile,
 					  &file->f_path, buffer,
 					  request, cond, flags, &perms,
-					  &allow, !in_atomic));
+					  &allow, false));
 	if (denied && !error) {
 		/*
 		 * check every profile in file label that was not tested
@@ -679,7 +683,7 @@ static int __path_perm(const char *op, const struct cred *subj_cred,
 				profile_path_perm(op, subj_cred,
 						  profile, &file->f_path,
 						  buffer, request, cond, flags,
-						  &perms, &allow, !in_atomic));
+						  &perms, &allow, false));
 		else
 			error = fn_for_each_not_in_set(label, flabel, profile, is_mqueue ?
 				aa_profile_mqueue_perm(profile, &file->f_path,
@@ -687,7 +691,7 @@ static int __path_perm(const char *op, const struct cred *subj_cred,
 				profile_path_perm(op, subj_cred,
 						  profile, &file->f_path,
 						  buffer, request, cond, flags,
-						  &perms, &allow, !in_atomic));
+						  &perms, &allow, false));
 	}
 	if (!error)
 		update_file_ctx(file_ctx(file), label, request,
@@ -766,8 +770,7 @@ static bool __file_is_delegated(struct aa_label *obj_label)
 	return unconfined(obj_label);
 }
 
-static bool __unix_needs_revalidation(struct file *file, struct aa_label *label,
-				      u32 request)
+static bool __is_unix_file(struct file *file)
 {
 	struct socket *sock = (struct socket *) file->private_data;
 
@@ -775,21 +778,29 @@ static bool __unix_needs_revalidation(struct file *file, struct aa_label *label,
 
 	if (!S_ISSOCK(file_inode(file)->i_mode))
 		return false;
-	if (request & NET_PEER_MASK)
-		return false;
 	/* sock and sock->sk can be NULL for sockets being set up or torn down */
 	if (!sock || !sock->sk)
 		return false;
-	if (sock->sk->sk_family == PF_UNIX) {
-		struct aa_sk_ctx *ctx = aa_sock(sock->sk);
-
-		if (rcu_access_pointer(ctx->peer) !=
-		    rcu_access_pointer(ctx->peer_lastupdate))
-			return true;
-		return !__aa_subj_label_is_cached(rcu_dereference(ctx->label),
-						  label);
-	}
+	if (sock->sk->sk_family == PF_UNIX)
+		return true;
 	return false;
+}
+
+static bool __unix_needs_revalidation(struct file *file, struct aa_label *label,
+				      u32 request)
+{
+	struct socket *sock = (struct socket *) file->private_data;
+
+	AA_BUG(!__is_unix_file(file));
+	lockdep_assert_in_rcu_read_lock();
+
+	struct aa_sk_ctx *skctx = aa_sock(sock->sk);
+
+	if (rcu_access_pointer(skctx->peer) !=
+	    rcu_access_pointer(skctx->peer_lastupdate))
+		return true;
+
+	return !__aa_subj_label_is_cached(rcu_dereference(skctx->label), label);
 }
 
 /**
@@ -815,6 +826,10 @@ int aa_file_perm(const char *op, const struct cred *subj_cred,
 	AA_BUG(!label);
 	AA_BUG(!file);
 
+	/* don't reaudit files closed during inheritance */
+	if (unlikely(file->f_path.dentry == aa_null.dentry))
+		return -EACCES;
+
 	fctx = file_ctx(file);
 
 	rcu_read_lock();
@@ -830,7 +845,7 @@ int aa_file_perm(const char *op, const struct cred *subj_cred,
 	 */
 	denied = request & ~fctx->allow;
 	if (unconfined(label) || __file_is_delegated(flabel) ||
-	    __unix_needs_revalidation(file, label, request) ||
+	    (!denied && __is_unix_file(file) && !__unix_needs_revalidation(file, label, request)) ||
 	    (!denied && __aa_subj_label_is_cached(label, flabel))) {
 		rcu_read_unlock();
 		goto done;
@@ -842,7 +857,7 @@ int aa_file_perm(const char *op, const struct cred *subj_cred,
 
 	if (is_mqueue_inode(file_inode(file))) {
 		error = __file_mqueue_perm(op, subj_cred, label, flabel, file,
-					   request, denied, in_atomic);
+					   request, denied, true);
 	} else if (path_mediated_fs(file->f_path.dentry))
 		error = __file_path_perm(op, subj_cred, label, flabel, file,
 					 request, denied, in_atomic);

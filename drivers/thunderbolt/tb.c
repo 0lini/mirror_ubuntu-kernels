@@ -11,6 +11,7 @@
 #include <linux/delay.h>
 #include <linux/pm_runtime.h>
 #include <linux/platform_data/x86/apple.h>
+#include <linux/pci.h>
 
 #include "tb.h"
 #include "tb_regs.h"
@@ -18,6 +19,7 @@
 
 #define TB_TIMEOUT		100	/* ms */
 #define TB_RELEASE_BW_TIMEOUT	10000	/* ms */
+#define TB_PCIEHP_ENUMERATION_DELAY 300	/* ms */
 
 /*
  * How many time bandwidth allocation request from graphics driver is
@@ -60,6 +62,9 @@ MODULE_PARM_DESC(asym_threshold,
  * @remove_work: Work used to remove any unplugged routers after
  *		 runtime resume
  * @groups: Bandwidth groups used in this domain.
+ * @pci_nb: PCI bus notifier to detect when a display driver binds
+ * @display_bound: Set when a PCI display driver has bound
+ * @display_retry_work: Work to retry DP tunneling after display driver binds
  */
 struct tb_cm {
 	struct list_head tunnel_list;
@@ -67,6 +72,9 @@ struct tb_cm {
 	bool hotplug_active;
 	struct delayed_work remove_work;
 	struct tb_bandwidth_group groups[MAX_GROUPS];
+	struct notifier_block pci_nb;
+	bool display_bound;
+	struct work_struct display_retry_work;
 };
 
 static inline struct tb *tcm_to_tb(struct tb_cm *tcm)
@@ -83,6 +91,12 @@ struct tb_hotplug_event {
 	int retry;
 };
 
+/* Delayed work to rescan PCIe bus after tunnel activation */
+struct tb_pci_rescan_work {
+	struct delayed_work work;
+	struct pci_bus *bus;
+};
+
 static void tb_scan_port(struct tb_port *port);
 static void tb_handle_hotplug(struct work_struct *work);
 static void tb_dp_resource_unavailable(struct tb *tb, struct tb_port *port,
@@ -90,11 +104,22 @@ static void tb_dp_resource_unavailable(struct tb *tb, struct tb_port *port,
 static void tb_queue_dp_bandwidth_request(struct tb *tb, u64 route, u8 port,
 					  int retry, unsigned long delay);
 
+static void tb_pci_rescan_work_fn(struct work_struct *work)
+{
+	struct tb_pci_rescan_work *rescan_work =
+		container_of(work, typeof(*rescan_work), work.work);
+
+	pci_lock_rescan_remove();
+	pci_rescan_bus(rescan_work->bus);
+	pci_unlock_rescan_remove();
+	kfree(rescan_work);
+}
+
 static void tb_queue_hotplug(struct tb *tb, u64 route, u8 port, bool unplug)
 {
 	struct tb_hotplug_event *ev;
 
-	ev = kmalloc(sizeof(*ev), GFP_KERNEL);
+	ev = kmalloc_obj(*ev);
 	if (!ev)
 		return;
 
@@ -225,14 +250,12 @@ static int tb_enable_clx(struct tb_switch *sw)
 	return ret == -EOPNOTSUPP ? 0 : ret;
 }
 
-/**
- * tb_disable_clx() - Disable CL states up to host router
- * @sw: Router to start
+/*
+ * Disables CL states from @sw up to the host router.
  *
- * Disables CL states from @sw up to the host router. Returns true if
- * any CL state were disabled. This can be used to figure out whether
- * the link was setup by us or the boot firmware so we don't
- * accidentally enable them if they were not enabled during discovery.
+ * This can be used to figure out whether the link was setup by us or the
+ * boot firmware so we don't accidentally enable them if they were not
+ * enabled during discovery.
  */
 static bool tb_disable_clx(struct tb_switch *sw)
 {
@@ -324,7 +347,7 @@ static int tb_enable_tmu(struct tb_switch *sw)
 
 	/*
 	 * If both routers at the end of the link are v2 we simply
-	 * enable the enhanched uni-directional mode. That covers all
+	 * enable the enhanced uni-directional mode. That covers all
 	 * the CL states. For v1 and before we need to use the normal
 	 * rate to allow CL1 (when supported). Otherwise we keep the TMU
 	 * running at the highest accuracy.
@@ -456,10 +479,8 @@ static void tb_scan_xdomain(struct tb_port *port)
 	}
 }
 
-/**
- * tb_find_unused_port() - return the first inactive port on @sw
- * @sw: Switch to find the port on
- * @type: Port type to look for
+/*
+ * Returns the first inactive port on @sw.
  */
 static struct tb_port *tb_find_unused_port(struct tb_switch *sw,
 					   enum tb_port_type type)
@@ -542,13 +563,15 @@ static struct tb_tunnel *tb_find_first_usb3_tunnel(struct tb *tb,
  * @src_port: Source protocol adapter
  * @dst_port: Destination protocol adapter
  * @port: USB4 port the consumed bandwidth is calculated
- * @consumed_up: Consumed upsream bandwidth (Mb/s)
+ * @consumed_up: Consumed upstream bandwidth (Mb/s)
  * @consumed_down: Consumed downstream bandwidth (Mb/s)
  *
  * Calculates consumed USB3 and PCIe bandwidth at @port between path
  * from @src_port to @dst_port. Does not take USB3 tunnel starting from
  * @src_port and ending on @src_port into account because that bandwidth is
  * already included in as part of the "first hop" USB3 tunnel.
+ *
+ * Return: %0 on success, negative errno otherwise.
  */
 static int tb_consumed_usb3_pcie_bandwidth(struct tb *tb,
 					   struct tb_port *src_port,
@@ -591,7 +614,7 @@ static int tb_consumed_usb3_pcie_bandwidth(struct tb *tb,
  * @src_port: Source protocol adapter
  * @dst_port: Destination protocol adapter
  * @port: USB4 port the consumed bandwidth is calculated
- * @consumed_up: Consumed upsream bandwidth (Mb/s)
+ * @consumed_up: Consumed upstream bandwidth (Mb/s)
  * @consumed_down: Consumed downstream bandwidth (Mb/s)
  *
  * Calculates consumed DP bandwidth at @port between path from @src_port
@@ -601,6 +624,8 @@ static int tb_consumed_usb3_pcie_bandwidth(struct tb *tb,
  * If there is bandwidth reserved for any of the groups between
  * @src_port and @dst_port (but not yet used) that is also taken into
  * account in the returned consumed bandwidth.
+ *
+ * Return: %0 on success, negative errno otherwise.
  */
 static int tb_consumed_dp_bandwidth(struct tb *tb,
 				    struct tb_port *src_port,
@@ -701,6 +726,8 @@ static bool tb_asym_supported(struct tb_port *src_port, struct tb_port *dst_port
  * single link at @port. If @include_asym is set then includes the
  * additional banwdith if the links are transitioned into asymmetric to
  * direction from @src_port to @dst_port.
+ *
+ * Return: %0 on success, negative errno otherwise.
  */
 static int tb_maximum_bandwidth(struct tb *tb, struct tb_port *src_port,
 				struct tb_port *dst_port, struct tb_port *port,
@@ -807,6 +834,8 @@ static int tb_maximum_bandwidth(struct tb *tb, struct tb_port *src_port,
  * If @include_asym is true then includes also bandwidth that can be
  * added when the links are transitioned into asymmetric (but does not
  * transition the links).
+ *
+ * Return: %0 on success, negative errno otherwise.
  */
 static int tb_available_bandwidth(struct tb *tb, struct tb_port *src_port,
 				 struct tb_port *dst_port, int *available_up,
@@ -1029,6 +1058,8 @@ static int tb_create_usb3_tunnels(struct tb_switch *sw)
  * (requested + currently consumed) on that link exceed @asym_threshold.
  *
  * Must be called with available >= requested over all links.
+ *
+ * Return: %0 on success, negative errno otherwise.
  */
 static int tb_configure_asym(struct tb *tb, struct tb_port *src_port,
 			     struct tb_port *dst_port, int requested_up,
@@ -1109,7 +1140,7 @@ static int tb_configure_asym(struct tb *tb, struct tb_port *src_port,
 
 		/*
 		 * Here requested + consumed > threshold so we need to
-		 * transtion the link into asymmetric now.
+		 * transition the link into asymmetric now.
 		 */
 		ret = tb_switch_set_link_width(up->sw, width_up);
 		if (ret) {
@@ -1135,6 +1166,8 @@ static int tb_configure_asym(struct tb *tb, struct tb_port *src_port,
  * Goes over each link from @src_port to @dst_port and tries to
  * transition the link to symmetric if the currently consumed bandwidth
  * allows and link asymmetric preference is ignored (if @keep_asym is %false).
+ *
+ * Return: %0 on success, negative errno otherwise.
  */
 static int tb_configure_sym(struct tb *tb, struct tb_port *src_port,
 			    struct tb_port *dst_port, bool keep_asym)
@@ -1895,6 +1928,58 @@ static struct tb_port *tb_find_dp_out(struct tb *tb, struct tb_port *in)
 	return NULL;
 }
 
+static void tb_tunnel_dp(struct tb *tb);
+
+/*
+ * Check if any PCI display class (0x03xx) device has a driver bound.
+ * Used to decide whether to defer DPRX polling at boot.
+ */
+static bool tb_is_display_driver_bound(void)
+{
+	struct pci_dev *pdev = NULL;
+
+	while ((pdev = pci_get_base_class(PCI_BASE_CLASS_DISPLAY, pdev))) {
+		if (pdev->driver) {
+			pci_dev_put(pdev);
+			return true;
+		}
+	}
+	return false;
+}
+
+static void tb_display_retry_work_fn(struct work_struct *work)
+{
+	struct tb_cm *tcm = container_of(work, struct tb_cm, display_retry_work);
+	struct tb *tb = tcm_to_tb(tcm);
+
+	mutex_lock(&tb->lock);
+	tb_dbg(tb, "display driver bound, retrying DP tunneling\n");
+	tb_tunnel_dp(tb);
+	mutex_unlock(&tb->lock);
+}
+
+static int tb_pci_notifier_fn(struct notifier_block *nb, unsigned long action,
+			      void *data)
+{
+	struct tb_cm *tcm = container_of(nb, struct tb_cm, pci_nb);
+	struct device *dev = data;
+	struct pci_dev *pdev;
+
+	if (action != BUS_NOTIFY_BOUND_DRIVER)
+		return NOTIFY_OK;
+
+	pdev = to_pci_dev(dev);
+	if ((pdev->class >> 16) != PCI_BASE_CLASS_DISPLAY)
+		return NOTIFY_OK;
+
+	if (!tcm->display_bound) {
+		tcm->display_bound = true;
+		schedule_work(&tcm->display_retry_work);
+	}
+
+	return NOTIFY_OK;
+}
+
 static void tb_dp_tunnel_active(struct tb_tunnel *tunnel, void *data)
 {
 	struct tb_port *in = tunnel->src_port;
@@ -1928,7 +2013,7 @@ static void tb_dp_tunnel_active(struct tb_tunnel *tunnel, void *data)
 			 */
 			tb_recalc_estimated_bandwidth(tb);
 			/*
-			 * In case of DP tunnel exists, change host
+			 * In case DP tunnel exists, change host
 			 * router's 1st children TMU mode to HiFi for
 			 * CL0s to work.
 			 */
@@ -1936,6 +2021,7 @@ static void tb_dp_tunnel_active(struct tb_tunnel *tunnel, void *data)
 		}
 	} else {
 		struct tb_port *in = tunnel->src_port;
+		struct tb_cm *tcm = tb_priv(tb);
 
 		/*
 		 * This tunnel failed to establish. This means DPRX
@@ -1944,16 +2030,26 @@ static void tb_dp_tunnel_active(struct tb_tunnel *tunnel, void *data)
 		 * loaded or not all DP cables where connected to the
 		 * discrete router.
 		 *
-		 * In both cases we remove the DP IN adapter from the
-		 * available resources as it is not usable. This will
-		 * also tear down the tunnel and try to re-use the
-		 * released DP OUT.
+		 * If no display driver has bound yet (common during boot
+		 * with FDE/LUKS where the GPU driver loads late from
+		 * the encrypted root filesystem), tear down the tunnel
+		 * but keep the DP IN resource available. The PCI bus
+		 * notifier will trigger a retry once a display driver
+		 * binds.
 		 *
-		 * It will be added back only if there is hotplug for
-		 * the DP IN again.
+		 * Otherwise, remove the DP IN adapter from available
+		 * resources as it is not usable. It will be added back
+		 * only if there is hotplug for the DP IN again.
 		 */
-		tb_tunnel_warn(tunnel, "not active, tearing down\n");
-		tb_dp_resource_unavailable(tb, in, "DPRX negotiation failed");
+		if (!tcm->display_bound && !tb_is_display_driver_bound()) {
+			tb_tunnel_warn(tunnel,
+				       "not active, deferring until display driver loads\n");
+			tb_deactivate_and_free_tunnel(tunnel);
+		} else {
+			tb_tunnel_warn(tunnel, "not active, tearing down\n");
+			tb_dp_resource_unavailable(tb, in,
+						   "DPRX negotiation failed");
+		}
 	}
 	mutex_unlock(&tb->lock);
 
@@ -2305,6 +2401,22 @@ static int tb_tunnel_pci(struct tb *tb, struct tb_switch *sw)
 		tb_sw_warn(sw, "failed to connect xHCI\n");
 
 	list_add_tail(&tunnel->list, &tcm->tunnel_list);
+
+	/* Schedule a delayed PCIe bus rescan in case pciehp misses devices */
+	if (tb->nhi && tb->nhi->pdev && tb->nhi->pdev->bus) {
+		struct pci_bus *bus = tb->nhi->pdev->bus;
+		struct tb_pci_rescan_work *rescan_work;
+
+		rescan_work = kmalloc(sizeof(*rescan_work), GFP_KERNEL);
+		if (!rescan_work)
+			return 0;
+
+		rescan_work->bus = bus->parent ? bus->parent : bus;
+		INIT_DELAYED_WORK(&rescan_work->work, tb_pci_rescan_work_fn);
+		queue_delayed_work(tb->wq, &rescan_work->work,
+				   msecs_to_jiffies(TB_PCIEHP_ENUMERATION_DELAY));
+	}
+
 	return 0;
 }
 
@@ -2628,7 +2740,7 @@ static int tb_alloc_dp_bandwidth(struct tb_tunnel *tunnel, int *requested_up,
 				 * the 10s already expired and we should
 				 * give the reserved back to others).
 				 */
-				mod_delayed_work(system_wq, &group->release_work,
+				mod_delayed_work(system_percpu_wq, &group->release_work,
 					msecs_to_jiffies(TB_RELEASE_BW_TIMEOUT));
 			}
 		}
@@ -2778,8 +2890,8 @@ static void tb_handle_dp_bandwidth_request(struct work_struct *work)
 			 * There is no request active so this means the
 			 * BW allocation mode was enabled from graphics
 			 * side. At this point we know that the graphics
-			 * driver has read the DRPX capabilities so we
-			 * can offer an better bandwidth estimatation.
+			 * driver has read the DPRX capabilities so we
+			 * can offer better bandwidth estimation.
 			 */
 			tb_port_dbg(in, "DPTX enabled bandwidth allocation mode, updating estimated bandwidth\n");
 			tb_recalc_estimated_bandwidth(tb);
@@ -2854,7 +2966,7 @@ static void tb_queue_dp_bandwidth_request(struct tb *tb, u64 route, u8 port,
 {
 	struct tb_hotplug_event *ev;
 
-	ev = kmalloc(sizeof(*ev), GFP_KERNEL);
+	ev = kmalloc_obj(*ev);
 	if (!ev)
 		return;
 
@@ -2948,6 +3060,9 @@ static void tb_deinit(struct tb *tb)
 {
 	struct tb_cm *tcm = tb_priv(tb);
 	int i;
+
+	bus_unregister_notifier(&pci_bus_type, &tcm->pci_nb);
+	cancel_work_sync(&tcm->display_retry_work);
 
 	/* Cancel all the release bandwidth workers */
 	for (i = 0; i < ARRAY_SIZE(tcm->groups); i++)
@@ -3375,7 +3490,15 @@ struct tb *tb_probe(struct tb_nhi *nhi)
 	INIT_LIST_HEAD(&tcm->tunnel_list);
 	INIT_LIST_HEAD(&tcm->dp_resources);
 	INIT_DELAYED_WORK(&tcm->remove_work, tb_remove_work);
+	INIT_WORK(&tcm->display_retry_work, tb_display_retry_work_fn);
 	tb_init_bandwidth_groups(tcm);
+
+	/* Check if a display driver is already bound (e.g. hotplug after boot) */
+	tcm->display_bound = tb_is_display_driver_bound();
+
+	/* Watch for display driver binding to defer DPRX until GPU is ready */
+	tcm->pci_nb.notifier_call = tb_pci_notifier_fn;
+	bus_register_notifier(&pci_bus_type, &tcm->pci_nb);
 
 	tb_dbg(tb, "using software connection manager\n");
 

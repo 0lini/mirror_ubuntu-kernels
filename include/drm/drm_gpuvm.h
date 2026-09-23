@@ -58,11 +58,13 @@ enum drm_gpuva_flags {
 	DRM_GPUVA_SPARSE = (1 << 1),
 
 	/**
-	 * @DRM_GPUVA_SINGLE_PAGE:
+	 * @DRM_GPUVA_REPEAT:
 	 *
-	 * Flag indicating that the &drm_gpuva is a single-page mapping.
+	 * Flag indicating that the &drm_gpuva is a mapping of a GEM
+	 * object with a certain range that is repeated multiple times to
+	 * fill the virtual address range.
 	 */
-	DRM_GPUVA_SINGLE_PAGE = (1 << 2),
+	DRM_GPUVA_REPEAT = (1 << 2),
 
 	/**
 	 * @DRM_GPUVA_USERBITS: user defined bits
@@ -119,6 +121,18 @@ struct drm_gpuva {
 		 */
 		u64 offset;
 
+		/*
+		 * @gem.range: the range of the GEM that is mapped
+		 *
+		 * When dealing with normal mappings, this must be zero.
+		 * When flags has DRM_GPUVA_REPEAT set, this field must be
+		 * smaller than va.range and va.range must be a multiple of
+		 * gem.range.
+		 * This is a u32 not a u64 because we expect repeated mappings
+		 * to be pointing to relatively small portions of a GEM object.
+		 */
+		u32 range;
+
 		/**
 		 * @gem.obj: the mapped &drm_gem_object
 		 */
@@ -168,17 +182,6 @@ struct drm_gpuva *drm_gpuva_find_first(struct drm_gpuvm *gpuvm,
 				       u64 addr, u64 range);
 struct drm_gpuva *drm_gpuva_find_prev(struct drm_gpuvm *gpuvm, u64 start);
 struct drm_gpuva *drm_gpuva_find_next(struct drm_gpuvm *gpuvm, u64 end);
-
-static inline void drm_gpuva_init(struct drm_gpuva *va, u64 addr, u64 range,
-				  struct drm_gem_object *obj, u64 offset,
-				  enum drm_gpuva_flags flags)
-{
-	va->va.addr = addr;
-	va->va.range = range;
-	va->gem.obj = obj;
-	va->gem.offset = offset;
-	va->flags = flags;
-}
 
 /**
  * drm_gpuva_invalidate() - sets whether the backing GEM of this &drm_gpuva is
@@ -754,8 +757,8 @@ drm_gpuvm_bo_create(struct drm_gpuvm *gpuvm,
 		    struct drm_gem_object *obj);
 
 struct drm_gpuvm_bo *
-drm_gpuvm_bo_obtain(struct drm_gpuvm *gpuvm,
-		    struct drm_gem_object *obj);
+drm_gpuvm_bo_obtain_locked(struct drm_gpuvm *gpuvm,
+			   struct drm_gem_object *obj);
 struct drm_gpuvm_bo *
 drm_gpuvm_bo_obtain_prealloc(struct drm_gpuvm_bo *vm_bo);
 
@@ -899,6 +902,17 @@ struct drm_gpuva_op_map {
 		 * @gem.offset: the offset within the &drm_gem_object
 		 */
 		u64 offset;
+
+		/*
+		 * @gem.range: the range of the GEM that is mapped
+		 *
+		 * When dealing with normal mappings, this must be zero.
+		 * When flags has DRM_GPUVA_REPEAT set, it must be a multiple
+		 * of va.range. This is a u32 not a u64 because we expect
+		 * repeated mappings to be pointing to a relatively small
+		 * portion of a GEM object.
+		 */
+		u32 range;
 
 		/**
 		 * @gem.obj: the &drm_gem_object to map
@@ -1112,11 +1126,23 @@ struct drm_gpuva_ops {
  */
 #define drm_gpuva_next_op(op) list_next_entry(op, entry)
 
+/**
+ * struct drm_gpuvm_map_req - arguments passed to drm_gpuvm_sm_map[_ops_create]()
+ */
+struct drm_gpuvm_map_req {
+	/**
+	 * @map: struct drm_gpuva_op_map
+	 */
+	struct drm_gpuva_op_map map;
+};
+
 struct drm_gpuva_ops *
 drm_gpuvm_sm_map_ops_create(struct drm_gpuvm *gpuvm,
-			    u64 addr, u64 range,
-			    struct drm_gem_object *obj, u64 offset,
-			    enum drm_gpuva_flags flags);
+			    const struct drm_gpuvm_map_req *req);
+struct drm_gpuva_ops *
+drm_gpuvm_madvise_ops_create(struct drm_gpuvm *gpuvm,
+			     const struct drm_gpuvm_map_req *req);
+
 struct drm_gpuva_ops *
 drm_gpuvm_sm_unmap_ops_create(struct drm_gpuvm *gpuvm,
 			      u64 addr, u64 range);
@@ -1132,10 +1158,13 @@ void drm_gpuva_ops_free(struct drm_gpuvm *gpuvm,
 			struct drm_gpuva_ops *ops);
 
 static inline void drm_gpuva_init_from_op(struct drm_gpuva *va,
-					  struct drm_gpuva_op_map *op)
+					  const struct drm_gpuva_op_map *op)
 {
-	drm_gpuva_init(va, op->va.addr, op->va.range,
-		       op->gem.obj, op->gem.offset, op->flags);
+	va->flags = op->flags;
+	va->va.addr = op->va.addr;
+	va->va.range = op->va.range;
+	va->gem.obj = op->gem.obj;
+	va->gem.offset = op->gem.offset;
 }
 
 /**
@@ -1257,12 +1286,20 @@ struct drm_gpuvm_ops {
 	 * used.
 	 */
 	int (*sm_step_unmap)(struct drm_gpuva_op *op, void *priv);
+
+	/**
+	 * @sm_can_merge_flags: called during &drm_gpuvm_sm_map
+	 *
+	 * This callback is called to determine whether two va ranges can be merged,
+	 * based on their flags.
+	 *
+	 * If NULL, va ranges can only be merged if their flags are equal.
+	 */
+	bool (*sm_can_merge_flags)(enum drm_gpuva_flags a, enum drm_gpuva_flags b);
 };
 
 int drm_gpuvm_sm_map(struct drm_gpuvm *gpuvm, void *priv,
-		     u64 addr, u64 range,
-		     struct drm_gem_object *obj, u64 offset,
-		     enum drm_gpuva_flags flags);
+		     const struct drm_gpuvm_map_req *req);
 
 int drm_gpuvm_sm_unmap(struct drm_gpuvm *gpuvm, void *priv,
 		       u64 addr, u64 range);
@@ -1270,22 +1307,20 @@ int drm_gpuvm_bo_unmap(struct drm_gpuvm_bo *bo, void *priv);
 
 int drm_gpuvm_sm_map_exec_lock(struct drm_gpuvm *gpuvm,
 			  struct drm_exec *exec, unsigned int num_fences,
-			  u64 req_addr, u64 req_range,
-			  struct drm_gem_object *obj, u64 offset,
-			  enum drm_gpuva_flags flags);
+			  struct drm_gpuvm_map_req *req);
 
 int drm_gpuvm_sm_unmap_exec_lock(struct drm_gpuvm *gpuvm, struct drm_exec *exec,
 				 u64 req_addr, u64 req_range);
 
 void drm_gpuva_map(struct drm_gpuvm *gpuvm,
 		   struct drm_gpuva *va,
-		   struct drm_gpuva_op_map *op);
+		   const struct drm_gpuva_op_map *op);
 
 void drm_gpuva_remap(struct drm_gpuva *prev,
 		     struct drm_gpuva *next,
-		     struct drm_gpuva_op_remap *op);
+		     const struct drm_gpuva_op_remap *op);
 
-void drm_gpuva_unmap(struct drm_gpuva_op_unmap *op);
+void drm_gpuva_unmap(const struct drm_gpuva_op_unmap *op);
 
 /**
  * drm_gpuva_op_remap_to_unmap_range() - Helper to get the start and range of

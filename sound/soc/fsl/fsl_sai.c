@@ -7,6 +7,7 @@
 #include <linux/clk.h>
 #include <linux/delay.h>
 #include <linux/dmaengine.h>
+#include <linux/firmware/imx/sm.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/pinctrl/consumer.h>
@@ -746,7 +747,7 @@ static int fsl_sai_hw_params(struct snd_pcm_substream *substream,
 				   FSL_SAI_CR4_FSD_MSTR, FSL_SAI_CR4_FSD_MSTR);
 
 	regmap_write(sai->regmap, FSL_SAI_xMR(tx),
-		     ~0UL - ((1 << min(channels, slots)) - 1));
+		     ~GENMASK_U32(min(channels, slots) - 1, 0));
 
 	return 0;
 }
@@ -1252,7 +1253,6 @@ static struct regmap_config fsl_sai_regmap_config = {
 	.reg_bits = 32,
 	.reg_stride = 4,
 	.val_bits = 32,
-	.fast_io = true,
 
 	.max_register = FSL_SAI_RMR,
 	.reg_defaults = fsl_sai_reg_defaults_ofs0,
@@ -1354,7 +1354,7 @@ static int fsl_sai_read_dlcfg(struct fsl_sai *sai)
 
 	num_cfg = elems / 3;
 	/*  Add one more for default value */
-	cfg = devm_kzalloc(&pdev->dev, (num_cfg + 1) * sizeof(*cfg), GFP_KERNEL);
+	cfg = devm_kcalloc(&pdev->dev, num_cfg + 1, sizeof(*cfg), GFP_KERNEL);
 	if (!cfg)
 		return -ENOMEM;
 
@@ -1426,10 +1426,12 @@ static int fsl_sai_probe(struct platform_device *pdev)
 	struct fsl_sai *sai;
 	struct regmap *gpr;
 	void __iomem *base;
+	const char *str = NULL;
 	char tmp[8];
 	int irq, ret, i;
 	int index;
 	u32 dmas[4];
+	u32 val;
 
 	sai = devm_kzalloc(dev, sizeof(*sai), GFP_KERNEL);
 	if (!sai)
@@ -1598,6 +1600,24 @@ static int fsl_sai_probe(struct platform_device *pdev)
 	ret = pm_runtime_put_sync(dev);
 	if (ret < 0 && ret != -ENOSYS)
 		goto err_pm_get_sync;
+
+	if (of_device_is_compatible(np, "fsl,imx952-sai") &&
+	    !of_property_read_string(np, "fsl,sai-amix-mode", &str)) {
+		if (!strcmp(str, "bypass"))
+			val = FSL_SAI_AMIX_BYPASS;
+		else if (!strcmp(str, "audmix"))
+			val = FSL_SAI_AMIX_AUDMIX;
+		else
+			val = FSL_SAI_AMIX_NONE;
+
+		if (val < FSL_SAI_AMIX_NONE) {
+			ret = scmi_imx_misc_ctrl_set(SCMI_IMX952_CTRL_BYPASS_AUDMIX, val);
+			if (ret) {
+				dev_err_probe(dev, ret, "Error setting audmix mode\n");
+				goto err_pm_get_sync;
+			}
+		}
+	}
 
 	/*
 	 * Register platform component before registering cpu dai for there

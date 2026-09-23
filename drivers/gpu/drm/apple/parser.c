@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only OR MIT
-/* Copyright 2021 Alyssa Rosenzweig <alyssa@rosenzweig.io> */
+/* Copyright 2021 Alyssa Rosenzweig */
 
 #include <linux/kernel.h>
 #include <linux/err.h>
+#include <linux/limits.h>
 #include <linux/math.h>
 #include <linux/string.h>
 #include <linux/slab.h>
@@ -177,7 +178,7 @@ static char *parse_string(struct dcp_parse_ctx *handle)
 	return out;
 }
 
-static int parse_int(struct dcp_parse_ctx *handle, s64 *value)
+static int parse_int_bound(struct dcp_parse_ctx *handle, s64 *value, s64 min, s64 max)
 {
 	const void *tag = parse_tag_of_type(handle, DCP_TYPE_INT64);
 	const s64 *in;
@@ -191,7 +192,16 @@ static int parse_int(struct dcp_parse_ctx *handle, s64 *value)
 		return PTR_ERR(in);
 
 	memcpy(value, in, sizeof(*value));
+
+	if (*value < min || *value > max)
+		return -EINVAL;
+
 	return 0;
+}
+
+static int parse_int(struct dcp_parse_ctx *handle, s64 *value)
+{
+	return parse_int_bound(handle, value, S64_MIN, S64_MAX);
 }
 
 static int parse_bool(struct dcp_parse_ctx *handle, bool *b)
@@ -438,6 +448,7 @@ static int parse_mode(struct dcp_parse_ctx *handle,
 	int ret = 0;
 	struct iterator it;
 	struct dimension horiz, vert;
+	s64 min_vrr = 0, max_vrr = 0;
 	s64 id = -1;
 	s64 best_color_mode = -1;
 	bool is_virtual = false;
@@ -454,6 +465,10 @@ static int parse_mode(struct dcp_parse_ctx *handle,
 			ret = parse_dimension(it.handle, &horiz);
 		else if (!strcmp(key, "VerticalAttributes"))
 			ret = parse_dimension(it.handle, &vert);
+		else if (!strcmp(key, "MinimumVariableRefreshRate"))
+			ret = parse_int_bound(it.handle, &min_vrr, 0, U32_MAX);
+		else if (!strcmp(key, "MaximumVariableRefreshRate"))
+			ret = parse_int_bound(it.handle, &max_vrr, 0, U32_MAX);
 		else if (!strcmp(key, "ColorModes"))
 			ret = parse_color_modes(it.handle, out);
 		else if (!strcmp(key, "ID"))
@@ -500,17 +515,21 @@ static int parse_mode(struct dcp_parse_ctx *handle,
 		return -EINVAL;
 
 	/*
-	 * HACK:
-	 * Ignore the 120 Hz mode on j314/j316 (identified by resolution).
-	 * DCP limits normal swaps to 60 Hz anyway and the 120 Hz mode might
-	 * cause choppiness with X11.
-	 * Just downscoring it and thus making the 60 Hz mode the preferred mode
-	 * seems not enough for some user space.
-	 */
+	* HACK:
+	* Mark the 120 Hz mode on j314/j316 (identified by resolution) as vrr.
+	* We still do not know how to drive VRR but at least seetinng timestamps
+	* in the the swap_surface message to non-zero values drives the display
+	* at 120 fps.
+	*/
 	if (vert.precise_sync_rate >> 16 == 120 &&
 	    ((horiz.active == 3024 && vert.active == 1964) ||
 	     (horiz.active == 3456 && vert.active == 2234)))
-		return -EINVAL;
+		out->vrr = true;
+
+	if (min_vrr && max_vrr) {
+		out->min_vrr = min_vrr;
+		out->max_vrr = max_vrr;
+	}
 
 	vert.active -= notch_height;
 	vert.sync_width += notch_height;
@@ -960,7 +979,6 @@ int parse_sound_constraints(struct dcp_parse_ctx *handle,
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(parse_sound_constraints);
 
 int parse_sound_mode(struct dcp_parse_ctx *handle,
 		     struct dcp_sound_format_mask *sieve,
@@ -990,7 +1008,6 @@ int parse_sound_mode(struct dcp_parse_ctx *handle,
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(parse_sound_mode);
 #endif
 
 int parse_system_log_mnits(struct dcp_parse_ctx *handle, struct dcp_system_ev_mnits *entry)

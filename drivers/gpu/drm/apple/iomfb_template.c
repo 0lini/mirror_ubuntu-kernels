@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only OR MIT
 /*
- * Copyright 2021 Alyssa Rosenzweig <alyssa@rosenzweig.io>
+ * Copyright 2021 Alyssa Rosenzweig
  * Copyright The Asahi Linux Contributors
  */
 
@@ -20,7 +20,6 @@
 #include <drm/drm_fb_dma_helper.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_framebuffer.h>
-#include <drm/drm_gem_dma_helper.h>
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_vblank.h>
 
@@ -788,7 +787,7 @@ static void dcp_on_set_power_state(struct apple_dcp *dcp, void *out, void *cooki
 static void dcp_on_set_parameter(struct apple_dcp *dcp, void *out, void *cookie)
 {
 	struct dcp_set_parameter_dcp param = {
-		.param = 14,
+		.param = IOMFBPARAM_ADAPTIVE_SYNC,
 		.value = { 0 },
 #if DCP_FW_VER >= DCP_FW_VERSION(13, 2, 0)
 		.count = 3,
@@ -825,10 +824,21 @@ void DCP_FW_NAME(iomfb_poweron)(struct apple_dcp *dcp)
 		dcp_set_display_device(dcp, false, &handle,
 				       dcp_on_set_parameter, cookie);
 	}
-	ret = wait_for_completion_timeout(&cookie->done, msecs_to_jiffies(500));
+	ret = wait_for_completion_timeout(&cookie->done, msecs_to_jiffies(10000));
 
-	if (ret == 0)
-		dev_warn(dcp->dev, "wait for power timed out\n");
+	if (ret == 0) {
+		dev_warn(dcp->dev, "wait for power timed out, connector will be broken\n");
+	} else if (ret > 0) {
+		int msecs = jiffies_to_msecs(ret);
+		if (msecs > 6000)
+			dev_info(dcp->dev, "dcp_set_power_state_req returned, %d ms remaining\n", msecs);
+		else
+			dev_warn(dcp->dev, "dcp_set_power_state_req returned, %d ms remaining\n", msecs);
+	} else {
+		drm_connector_set_link_status_property(&dcp->connector->base,
+						       DRM_MODE_LINK_STATUS_BAD);
+		dev_warn(dcp->dev, "wait for completion error: %d\n", ret);
+	}
 
 	kref_put(&cookie->refcount, release_wait_cookie);;
 
@@ -1210,14 +1220,17 @@ int DCP_FW_NAME(iomfb_modeset)(struct apple_dcp *dcp,
 	if (cmode)
 		dev_info(dcp->dev,
 			"set_digital_out_mode() color mode depth:%hhu format:%u "
-			"colorimetry:%u eotf:%u range:%u\n", cmode->depth,
+			"colorimetry:%u eotf:%u range:%u vrr:%u\n", cmode->depth,
 			cmode->format, cmode->colorimetry, cmode->eotf,
-			cmode->range);
+			cmode->range, mode->vrr);
 
 	dcp->mode = (struct dcp_set_digital_out_mode_req){
 		.color_mode_id = mode->color_mode_id,
 		.timing_mode_id = mode->timing_mode_id
 	};
+
+	/* Keep track of suspected vrr modes */
+	dcp->use_timestamps = mode->vrr;
 
 	cookie = kzalloc(sizeof(*cookie), GFP_KERNEL);
 	if (!cookie) {
@@ -1297,10 +1310,7 @@ void DCP_FW_NAME(iomfb_flush)(struct apple_dcp *dcp, struct drm_crtc *crtc, stru
 	}
 
 	for_each_oldnew_plane_in_state(state, plane, old_state, new_state, plane_idx) {
-		struct drm_framebuffer *fb = new_state->fb;
-		struct drm_gem_dma_object *obj;
-		struct drm_rect src_rect;
-		bool is_premultiplied = false;
+		struct apple_plane_state *apple_state = to_apple_plane_state(new_state);
 
 		/* skip planes not for this crtc */
 		if (old_state->crtc != crtc && new_state->crtc != crtc)
@@ -1322,7 +1332,7 @@ void DCP_FW_NAME(iomfb_flush)(struct apple_dcp *dcp, struct drm_crtc *crtc, stru
 
 		req->swap.swap_enabled |= BIT(l);
 
-		if (old_state->fb && fb != old_state->fb) {
+		if (old_state->fb && new_state->fb != old_state->fb) {
 			/*
 			 * Race condition between a framebuffer unbind getting
 			 * swapped out and GEM unreferencing a framebuffer. If
@@ -1349,50 +1359,23 @@ void DCP_FW_NAME(iomfb_flush)(struct apple_dcp *dcp, struct drm_crtc *crtc, stru
 		req->surf_null[l] = false;
 		has_surface = 1;
 
-		/*
-		 * DCP doesn't support XBGR8 / XRGB8 natively. Blending as
-		 * pre-multiplied alpha with a black background can be used as
-		 * workaround for the bottommost plane.
-		 */
-		if (fb->format->format == DRM_FORMAT_XRGB8888 ||
-		    fb->format->format == DRM_FORMAT_XBGR8888)
-		    is_premultiplied = true;
-
-		drm_rect_fp_to_int(&src_rect, &new_state->src);
-
-		req->swap.src_rect[l] = drm_to_dcp_rect(&src_rect);
-		req->swap.dst_rect[l] = drm_to_dcp_rect(&new_state->dst);
+		req->swap.src_rect[l] = apple_state->src_rect;
+		req->swap.dst_rect[l] = apple_state->dst_rect;
 
 		if (dcp->notch_height > 0)
 			req->swap.dst_rect[l].y += dcp->notch_height;
 
-		/* the obvious helper call drm_fb_dma_get_gem_addr() adjusts
-		 * the address for source x/y offsets. Since IOMFB has a direct
-		 * support source position prefer that.
+		req->surf_iova[l] = apple_state->iova;
+		req->surf[l].base = apple_state->surf;
+
+		/* Use sRGB colorspace only for internal panels. External
+		 * displays are expected to have EDID and user space can use
+		 * the contained colorimetry information to provide native
+		 * colors.
 		 */
-		obj = drm_fb_dma_get_gem_obj(fb, 0);
-		if (obj)
-			req->surf_iova[l] = obj->dma_addr + fb->offsets[0];
-
-		req->surf[l] = (struct DCP_FW_NAME(dcp_surface)){
-			.is_premultiplied = is_premultiplied,
-			.format = drm_format_to_dcp(fb->format->format),
-			.xfer_func = DCP_XFER_FUNC_SDR,
-			.colorspace = DCP_COLORSPACE_NATIVE,
-			.stride = fb->pitches[0],
-			.width = fb->width,
-			.height = fb->height,
-			.buf_size = fb->height * fb->pitches[0],
-			.surface_id = req->swap.surf_ids[l],
-
-			/* Only used for compressed or multiplanar surfaces */
-			.pix_size = 1,
-			.pel_w = 1,
-			.pel_h = 1,
-			.has_comp = 1,
-			.has_planes = 1,
-		};
-
+		if (dcp->connector_type == DRM_MODE_CONNECTOR_eDP &&
+		    req->surf[l].base.colorspace == DCP_COLORSPACE_BG_SRGB)
+			req->surf[l].base.colorspace = DCP_COLORSPACE_NATIVE;
 	}
 
 	if (!has_surface && !crtc_state->color_mgmt_changed) {
@@ -1408,6 +1391,16 @@ void DCP_FW_NAME(iomfb_flush)(struct apple_dcp *dcp, struct drm_crtc *crtc, stru
 		req->clear = 1;
 	}
 
+	if (has_surface && dcp->use_timestamps) {
+		/*
+		 * Fake timstamps to get 120hz refresh rate. It looks
+		 * like the actual value does not matter, as long  as it is non zero.
+		 */
+		req->swap.ts1 = 120;
+		req->swap.ts2 = 120;
+		req->swap.ts3 = 120;
+	}
+
 	/* These fields should be set together */
 	req->swap.swap_completed = req->swap.swap_enabled;
 
@@ -1419,20 +1412,17 @@ void DCP_FW_NAME(iomfb_flush)(struct apple_dcp *dcp, struct drm_crtc *crtc, stru
 		dcp->brightness.update = false;
 	}
 
-	if (crtc_state->color_mgmt_changed && crtc_state->ctm) {
-		struct iomfb_set_matrix_req mat;
-		struct drm_color_ctm *ctm = (struct drm_color_ctm *)crtc_state->ctm->data;
+	if (crtc_state->color_mgmt_changed) {
+		struct iomfb_set_matrix_req mat = {
+			.location = 9,
+		};
 
-		mat.unk_u32 = 9;
-		mat.r[0] = ctm->matrix[0];
-		mat.r[1] = ctm->matrix[1];
-		mat.r[2] = ctm->matrix[2];
-		mat.g[0] = ctm->matrix[3];
-		mat.g[1] = ctm->matrix[4];
-		mat.g[2] = ctm->matrix[5];
-		mat.b[0] = ctm->matrix[6];
-		mat.b[1] = ctm->matrix[7];
-		mat.b[2] = ctm->matrix[8];
+		if (crtc_state->ctm) {
+			struct drm_color_ctm *ctm = (struct drm_color_ctm *)crtc_state->ctm->data;
+			memcpy(mat.matrix, ctm->matrix, sizeof(mat.matrix));
+		} else {
+			mat.matrix[0] = mat.matrix[4] = mat.matrix[8] = 1LLU << 32;
+		}
 
 		iomfb_set_matrix(dcp, false, &mat, do_swap, NULL);
 	} else

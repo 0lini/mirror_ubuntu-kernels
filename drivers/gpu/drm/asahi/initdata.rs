@@ -15,8 +15,17 @@ use crate::f32;
 use crate::fw::initdata::*;
 use crate::fw::types::*;
 use crate::module_parameters;
-use crate::{driver::AsahiDevice, gem, gpu, hw, mmu};
-use kernel::error::{Error, Result};
+use crate::{
+    driver::AsahiDevice,
+    gem,
+    gpu,
+    hw,
+    mmu, //
+};
+use kernel::error::{
+    Error,
+    Result, //
+};
 use kernel::macros::versions;
 use kernel::prelude::*;
 use kernel::try_init;
@@ -228,7 +237,7 @@ impl<'a> InitDataBuilder::ver<'a> {
 
         #[allow(unused_variables)]
         let base_clock_khz = self.cfg.base_clock_hz / 1000;
-        let clocks_per_period = pwr.pwr_sample_period_aic_clks;
+        let v_clocks_per_period = pwr.pwr_sample_period_aic_clks;
 
         #[allow(unused_variables)]
         let clocks_per_period_coarse = self.cfg.base_clock_hz / 1000 * pwr.power_sample_period;
@@ -239,9 +248,9 @@ impl<'a> InitDataBuilder::ver<'a> {
                 let cfg = &self.cfg;
                 let dyncfg = &self.dyncfg;
                 try_init!(raw::HwDataA::ver {
-                    clocks_per_period: clocks_per_period,
+                    clocks_per_period: v_clocks_per_period,
                     #[ver(V >= V13_0B4)]
-                    clocks_per_period_2: clocks_per_period,
+                    clocks_per_period_2: v_clocks_per_period,
                     pwr_status: AtomicU32::new(4),
                     unk_10: f32!(1.0),
                     actual_pstate: 1,
@@ -719,14 +728,14 @@ impl<'a> InitDataBuilder::ver<'a> {
                     unk_2c: 1,
                     unk_30: 0,
                     unk_34: 120,
-                    sub <- try_init!(raw::GlobalsSub::ver {
+                    // sub <- try_init!(raw::GlobalsSub::ver {
                         unk_54: cfg.global_unk_54,
                         unk_56: 40,
                         unk_58: 0xffff,
                         unk_5e: U32(1),
                         unk_66: U32(1),
-                        ..Zeroable::init_zeroed()
-                    }),
+                    //     ..Zeroable::init_zeroed()
+                    // }),
                     unk_8900: 1,
                     pending_submissions: AtomicU32::new(0),
                     max_power: pwr.max_power_mw,
@@ -848,7 +857,7 @@ impl<'a> InitDataBuilder::ver<'a> {
         let hwb = self.hwdata_b()?;
 
         let mut buffer_mgr_ctl = gem::new_kernel_object(self.dev, 0x4000)?;
-        buffer_mgr_ctl.vmap()?.as_mut_slice().fill(0);
+        buffer_mgr_ctl.vmap()?.memset(0);
 
         GpuObject::new_init_prealloc(
             self.alloc.private.alloc_object()?,

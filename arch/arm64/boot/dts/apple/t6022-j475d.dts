@@ -18,6 +18,7 @@
 / {
 	compatible = "apple,j475d", "apple,t6022", "apple,arm-platform";
 	model = "Apple Mac Studio (M2 Ultra, 2023)";
+
 	aliases {
 		atcphy4 = &atcphy0_die1;
 		atcphy5 = &atcphy1_die1;
@@ -39,6 +40,16 @@
 	dp2hdmi-pwren-gpios = <&smc_gpio 25 GPIO_ACTIVE_HIGH>;
 };
 
+/* enable PCIe port01 with SDHCI */
+&port01 {
+	pwren-gpios = <&smc_gpio 22 GPIO_ACTIVE_HIGH>;
+	status = "okay";
+};
+
+&pcie0_dart_1 {
+	status = "okay";
+};
+
 &typec4 {
 	label = "USB-C Front Right";
 };
@@ -48,7 +59,6 @@
 };
 
 /* delete unused USB nodes on die 1 */
-
 /delete-node/ &dwc3_2_dart_0_die1;
 /delete-node/ &dwc3_2_dart_1_die1;
 /delete-node/ &dwc3_2_die1;
@@ -61,9 +71,7 @@
 /delete-node/ &atcphy3_die1;
 /delete-node/ &atcphy3_xbar_die1;
 
-
 /* delete unused always-on power-domains on die 1 */
-
 /delete-node/ &ps_atc2_usb_aon_die1;
 /delete-node/ &ps_atc2_usb_die1;
 
@@ -78,15 +86,6 @@
 &bluetooth0 {
 	compatible = "pci14e4,5f72";
 	brcm,board-type = "apple,canary";
-};
-
-&port01 {
-	pwren-gpios = <&smc_gpio 22 GPIO_ACTIVE_HIGH>;
-	status = "okay";
-};
-
-&pcie0_dart_1 {
-	status = "okay";
 };
 
 &sound {

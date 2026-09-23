@@ -372,7 +372,7 @@ static int smk_copy_relabel(struct list_head *nhead, struct list_head *ohead,
 	struct smack_known_list_elem *oklep;
 
 	list_for_each_entry(oklep, ohead, list) {
-		nklep = kzalloc(sizeof(struct smack_known_list_elem), gfp);
+		nklep = kzalloc_obj(struct smack_known_list_elem, gfp);
 		if (nklep == NULL) {
 			smk_destroy_label_list(nhead);
 			return -ENOMEM;
@@ -562,7 +562,7 @@ static int smack_add_opt(int token, const char *s, void **mnt_opts)
 	struct smack_known *skp;
 
 	if (!opts) {
-		opts = kzalloc(sizeof(struct smack_mnt_opts), GFP_KERNEL);
+		opts = kzalloc_obj(struct smack_mnt_opts);
 		if (!opts)
 			return -ENOMEM;
 		*mnt_opts = opts;
@@ -622,7 +622,7 @@ static int smack_fs_context_submount(struct fs_context *fc,
 	struct smack_mnt_opts *ctx;
 	struct inode_smack *isp;
 
-	ctx = kzalloc(sizeof(*ctx), GFP_KERNEL);
+	ctx = kzalloc_obj(*ctx);
 	if (!ctx)
 		return -ENOMEM;
 	fc->security = ctx;
@@ -673,7 +673,7 @@ static int smack_fs_context_dup(struct fs_context *fc,
 	if (!src)
 		return 0;
 
-	fc->security = kzalloc(sizeof(struct smack_mnt_opts), GFP_KERNEL);
+	fc->security = kzalloc_obj(struct smack_mnt_opts);
 	if (!fc->security)
 		return -ENOMEM;
 
@@ -2817,7 +2817,7 @@ static void smk_ipv6_port_label(struct socket *sock, struct sockaddr *address)
 	/*
 	 * A new port entry is required.
 	 */
-	spp = kzalloc(sizeof(*spp), GFP_KERNEL);
+	spp = kzalloc_obj(*spp);
 	if (spp == NULL)
 		return;
 
@@ -5006,7 +5006,7 @@ static int smack_inode_copy_up_xattr(struct dentry *src, const char *name)
 }
 
 static int smack_dentry_create_files_as(struct dentry *dentry, int mode,
-					struct qstr *name,
+					const struct qstr *name,
 					const struct cred *old,
 					struct cred *new)
 {
@@ -5127,7 +5127,6 @@ struct lsm_blob_sizes smack_blob_sizes __ro_after_init = {
 static const struct lsm_id smack_lsmid = {
 	.name = "smack",
 	.id = LSM_ID_SMACK,
-	.lsmprop = true,
 };
 
 static struct security_hook_list smack_hooks[] __ro_after_init = {
@@ -5360,7 +5359,20 @@ static __init int smack_init(void)
 	/* initialize the smack_known_list */
 	init_smack_known_list();
 
+	/* Inform the audit system that secctx is used */
+	audit_cfg_lsm(&smack_lsmid,
+		      AUDIT_CFG_LSM_SECCTX_SUBJECT |
+		      AUDIT_CFG_LSM_SECCTX_OBJECT);
+
 	return 0;
+}
+
+int __init smack_initcall(void)
+{
+	int rc_fs = init_smk_fs();
+	int rc_nf = smack_nf_ip_init();
+
+	return rc_fs ? rc_fs : rc_nf;
 }
 
 /*
@@ -5368,8 +5380,9 @@ static __init int smack_init(void)
  * all processes and objects when they are created.
  */
 DEFINE_LSM(smack) = {
-	.name = "smack",
+	.id = &smack_lsmid,
 	.flags = LSM_FLAG_LEGACY_MAJOR | LSM_FLAG_EXCLUSIVE,
 	.blobs = &smack_blob_sizes,
 	.init = smack_init,
+	.initcall_device = smack_initcall,
 };

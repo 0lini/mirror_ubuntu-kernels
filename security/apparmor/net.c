@@ -32,6 +32,16 @@ struct aa_sfs_entry aa_sfs_entry_networkv9[] = {
 	AA_SFS_FILE_BOOLEAN("af_unix",	1),
 	{ }
 };
+struct aa_sfs_entry aa_sfs_entry_networkv9_skb[] = {
+	AA_SFS_FILE_STRING("af_mask",	"inet inet6"),
+	AA_SFS_FILE_STRING("iface", "receive connect, secmark_postroute"),
+	AA_SFS_FILE_STRING("rcv_skb", "secmark_receive"),
+	/*AA_SFS_FILE_STRING("forward", "secmar_forwardk"),*/
+	AA_SFS_FILE_STRING("postroute", "secmark_send"),
+	AA_SFS_FILE_STRING("localout", "secmark_set"),
+	AA_SFS_FILE_STRING("relabel", "setcred"),
+	{ }
+};
 struct aa_sfs_entry aa_sfs_entry_network_compat[] = {
 	AA_SFS_FILE_STRING("af_mask",	AA_SFS_AF_MASK),
 	AA_SFS_FILE_BOOLEAN("af_unix",	1),
@@ -77,7 +87,7 @@ static const char * const net_mask_names[] = {
 	"unknown",
 	"unknown",
 	"unknown",
-	"unknown",
+	"set_label",
 };
 
 static void audit_unix_addr(struct audit_buffer *ab, const char *str,
@@ -253,30 +263,21 @@ aa_state_t aa_match_to_prot(struct aa_policydb *policy, aa_state_t state,
 	return state;
 }
 
-/* Generic af perm */
-int aa_profile_af_perm(struct aa_profile *profile,
+int aa_profile_af_compat_perm(struct aa_profile *profile,
 		       struct apparmor_audit_data *ad, u32 request, u16 family,
-		       int type, int protocol)
+			      int type)
 {
-	struct aa_ruleset *rules = profile->label.rules[0];
-	struct aa_perms *p = NULL;
-	aa_state_t state;
-
 	AA_BUG(family >= AF_MAX);
 	AA_BUG(type < 0 || type >= SOCK_MAX);
-	AA_BUG(profile_unconfined(profile));
 
-	if (profile_unconfined(profile))
-		return 0;
-
-	state = RULE_MEDIATES_NET(rules);
-	if (state) {
-		state = aa_match_to_prot(rules->policy, state, request, family,
-					 type, protocol, &p, &ad->info);
-		return aa_do_perms(profile, rules->policy, state, request, p,
-				   ad);
-	} else if (profile->net_compat) {
+	/* 2.x socket mediation was opt in, ie. only applied if net_compat
+	 * struct is present
+	 */
+	if (profile->net_compat && !profile_unconfined(profile)) {
 		/* 2.x socket mediation compat */
+		struct aa_ruleset *rules = profile->label.rules[0];
+		aa_state_t state = DFA_NOMATCH;
+
 		struct aa_perms perms = { };
 
 		perms.allow = (profile->net_compat->allow[family] &
@@ -291,9 +292,32 @@ int aa_profile_af_perm(struct aa_profile *profile,
 
 		return aa_do_perms(profile, rules->policy, state, request,
 				   &perms, ad);
-	} /* else */
+	}
 
 	return 0;
+}
+
+/* Generic af perm */
+static int profile_af_perm(struct aa_profile *profile,
+			   struct apparmor_audit_data *ad, u32 request,
+			   u16 family, int type, int protocol)
+{
+	struct aa_ruleset *rules = profile->label.rules[0];
+	struct aa_perms *p = NULL;
+	aa_state_t state;
+
+	AA_BUG(family >= AF_MAX);
+	AA_BUG(type < 0 || type >= SOCK_MAX);
+
+	state = RULE_MEDIATES_NET(rules);
+	if (state) {
+		state = aa_match_to_prot(rules->policy, state, request, family,
+					 type, protocol, &p, &ad->info);
+		return aa_do_perms(profile, rules->policy, state, request, p,
+				   ad);
+	} /* else */
+
+	return aa_profile_af_compat_perm(profile, ad, request, family, type);
 }
 
 int aa_af_perm(const struct cred *subj_cred, struct aa_label *label,
@@ -303,14 +327,14 @@ int aa_af_perm(const struct cred *subj_cred, struct aa_label *label,
 	DEFINE_AUDIT_NET(ad, op, subj_cred, NULL, family, type, protocol);
 
 	return fn_for_each_confined(label, profile,
-			aa_profile_af_perm(profile, &ad, request, family,
-					   type, protocol));
+			profile_af_perm(profile, &ad, request, family, type,
+					protocol));
 }
 
 static int aa_label_sk_perm(const struct cred *subj_cred,
 			    struct aa_label *label,
 			    const char *op, u32 request,
-			    struct sock *sk)
+			    const struct sock *sk)
 {
 	struct aa_sk_ctx *ctx = aa_sock(sk);
 	int error = 0;
@@ -324,13 +348,14 @@ static int aa_label_sk_perm(const struct cred *subj_cred,
 
 		ad.subj_cred = subj_cred;
 		error = fn_for_each_confined(label, profile,
-			    aa_profile_af_sk_perm(profile, &ad, request, sk));
+			    profile_af_perm(profile, &ad, request, sk->sk_family,
+					    sk->sk_type, sk->sk_protocol));
 	}
 
 	return error;
 }
 
-int aa_sk_perm(const char *op, u32 request, struct sock *sk)
+int aa_sk_perm(const char *op, u32 request, const struct sock *sk)
 {
 	struct aa_label *label;
 	int error;
@@ -353,8 +378,10 @@ int aa_sock_file_perm(const struct cred *subj_cred, struct aa_label *label,
 	struct socket *sock = (struct socket *) file->private_data;
 
 	AA_BUG(!label);
-	AA_BUG(!sock);
-	AA_BUG(!sock->sk);
+
+	/* sock && sock->sk can be NULL for sockets being set up or torn down */
+	if (!sock || !sock->sk)
+		return 0;
 
 	switch (sock->sk->sk_family) {
 	case PF_UNIX:
@@ -424,11 +451,14 @@ static int aa_secmark_perm(struct aa_profile *profile, u32 request, u32 secid,
 	return aa_check_perms(profile, &perms, request, ad, audit_net_cb);
 }
 
-int apparmor_secmark_check(struct aa_label *label, char *op, u32 request,
+int apparmor_secmark_check(struct aa_label *label, const char *op, u32 request,
 			   u32 secid, const struct sock *sk)
 {
 	struct aa_profile *profile;
 	DEFINE_AUDIT_SK(ad, op, NULL, sk);
+
+	if (secid == 0)
+		return 0;
 
 	return fn_for_each_confined(label, profile,
 				    aa_secmark_perm(profile, request, secid,

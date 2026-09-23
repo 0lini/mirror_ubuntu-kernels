@@ -862,9 +862,9 @@ int afk_send_epic(struct apple_dcp_afkep *ep, u32 channel, u16 tag,
 	eshdr->timestamp = cpu_to_le64(0);
 	eshdr->tag = cpu_to_le16(tag);
 	if (ecat == EPIC_CAT_REPLY)
-		eshdr->inline_len = cpu_to_le16(payload_len - 4);
+		eshdr->inline_len = cpu_to_le32(payload_len - 4);
 	else
-		eshdr->inline_len = cpu_to_le16(0);
+		eshdr->inline_len = cpu_to_le32(0);
 	wptr += sizeof(*eshdr);
 
 	memcpy(ep->txbfr.buf + wptr, payload, payload_len);

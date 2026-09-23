@@ -29,8 +29,8 @@
 #define DPTX_LANE_END     (DPTX_LANE0_OFFSET + DPTX_MAX_LANES * DPTX_LANE_STRIDE)
 
 enum apple_dptx_type {
-    DPTX_PHY_T8112,
-    DPTX_PHY_T6020,
+	DPTX_PHY_T8112,
+	DPTX_PHY_T6020,
 };
 
 struct apple_dptx_phy_hw {
@@ -94,32 +94,32 @@ static int dptx_phy_set_active_lane_count(struct apple_dptx_phy *phy, u32 num_la
 		u64 offset = 0x5000 + 0x1000 * l;
 		readl(phy->regs.dptx + offset);
 		writel(0x100, phy->regs.dptx + offset);
-    }
-    for (; l < DPTX_MAX_LANES; l++) {
-        u64 offset = 0x5000 + 0x1000 * l;
-	readl(phy->regs.dptx + offset);
-	writel(0x300, phy->regs.dptx + offset);
-    }
-    for (l = 0; l < num_lanes; l++) {
-        u64 offset = 0x5000 + 0x1000 * l;
-	readl(phy->regs.dptx + offset);
-	writel(0x0, phy->regs.dptx + offset);
-    }
-    for (; l < DPTX_MAX_LANES; l++) {
-        u64 offset = 0x5000 + 0x1000 * l;
-	readl(phy->regs.dptx + offset);
-	writel(0x300, phy->regs.dptx + offset);
-    }
+	}
+	for (; l < DPTX_MAX_LANES; l++) {
+		u64 offset = 0x5000 + 0x1000 * l;
+		readl(phy->regs.dptx + offset);
+		writel(0x300, phy->regs.dptx + offset);
+	}
+	for (l = 0; l < num_lanes; l++) {
+		u64 offset = 0x5000 + 0x1000 * l;
+		readl(phy->regs.dptx + offset);
+		writel(0x0, phy->regs.dptx + offset);
+	}
+	for (; l < DPTX_MAX_LANES; l++) {
+		u64 offset = 0x5000 + 0x1000 * l;
+		readl(phy->regs.dptx + offset);
+		writel(0x300, phy->regs.dptx + offset);
+	}
 
-    if (num_lanes > 0) {
-	// clear32(phy->regs.dptx + 0x4000, 0x4000000);
-	ctrl = readl(phy->regs.dptx + 0x4000);
-	ctrl &= ~0x4000000;
-	writel(ctrl, phy->regs.dptx + 0x4000);
-    }
-    phy->active_lanes = num_lanes;
+	if (num_lanes > 0) {
+		// clear32(phy->regs.dptx + 0x4000, 0x4000000);
+		ctrl = readl(phy->regs.dptx + 0x4000);
+		ctrl &= ~0x4000000;
+		writel(ctrl, phy->regs.dptx + 0x4000);
+	}
+	phy->active_lanes = num_lanes;
 
-    return 0;
+	return 0;
 }
 
 static int dptx_phy_activate(struct apple_dptx_phy *phy, u32 dcp_index)
@@ -323,204 +323,204 @@ static int dptx_phy_deactivate(struct apple_dptx_phy *phy)
 
 static int dptx_phy_set_link_rate(struct apple_dptx_phy *phy, u32 link_rate)
 {
-    u32 sts_1008, sts_1014, val_100c, val_20b0, val_20b4;
+	u32 sts_1008, sts_1014, val_100c, val_20b0, val_20b4;
 
 	dev_dbg(phy->dev, "set_link_rate(%u)\n", link_rate);
 
-    // MMIO: R.4   0x23c544004 (dptx-phy[0], offset 0x4004) = 0x49
-    // MMIO: W.4   0x23c544004 (dptx-phy[0], offset 0x4004) = 0x49
-    set32(phy->regs.dptx + 0x4004, 0x08);
+	// MMIO: R.4   0x23c544004 (dptx-phy[0], offset 0x4004) = 0x49
+	// MMIO: W.4   0x23c544004 (dptx-phy[0], offset 0x4004) = 0x49
+	set32(phy->regs.dptx + 0x4004, 0x08);
 
-    // MMIO: R.4   0x23c544000 (dptx-phy[0], offset 0x4000) = 0x41021ac
-    // MMIO: W.4   0x23c544000 (dptx-phy[0], offset 0x4000) = 0x41021ac
-    clear32(phy->regs.dptx + 0x4000, 0x0000040);
+	// MMIO: R.4   0x23c544000 (dptx-phy[0], offset 0x4000) = 0x41021ac
+	// MMIO: W.4   0x23c544000 (dptx-phy[0], offset 0x4000) = 0x41021ac
+	clear32(phy->regs.dptx + 0x4000, 0x0000040);
 
-    // MMIO: R.4   0x23c544004 (dptx-phy[0], offset 0x4004) = 0x49
-    // MMIO: W.4   0x23c544004 (dptx-phy[0], offset 0x4004) = 0x41
-    clear32(phy->regs.dptx + 0x4004, 0x08);
+	// MMIO: R.4   0x23c544004 (dptx-phy[0], offset 0x4004) = 0x49
+	// MMIO: W.4   0x23c544004 (dptx-phy[0], offset 0x4004) = 0x41
+	clear32(phy->regs.dptx + 0x4004, 0x08);
 
-    // MMIO: R.4   0x23c544000 (dptx-phy[0], offset 0x4000) = 0x41021ac
-    // MMIO: W.4   0x23c544000 (dptx-phy[0], offset 0x4000) = 0x41021ac
-    clear32(phy->regs.dptx + 0x4000, 0x2000000);
-    // MMIO: R.4   0x23c544000 (dptx-phy[0], offset 0x4000) = 0x41021ac
-    // MMIO: W.4   0x23c544000 (dptx-phy[0], offset 0x4000) = 0x41021ac
-    set32(phy->regs.dptx + 0x4000, 0x1000000);
+	// MMIO: R.4   0x23c544000 (dptx-phy[0], offset 0x4000) = 0x41021ac
+	// MMIO: W.4   0x23c544000 (dptx-phy[0], offset 0x4000) = 0x41021ac
+	clear32(phy->regs.dptx + 0x4000, 0x2000000);
+	// MMIO: R.4   0x23c544000 (dptx-phy[0], offset 0x4000) = 0x41021ac
+	// MMIO: W.4   0x23c544000 (dptx-phy[0], offset 0x4000) = 0x41021ac
+	set32(phy->regs.dptx + 0x4000, 0x1000000);
 
-    // MMIO: R.4   0x23c542200 (dptx-phy[0], offset 0x2200) = 0x2002
-    // MMIO: R.4   0x23c542200 (dptx-phy[0], offset 0x2200) = 0x2002
-    // MMIO: W.4   0x23c542200 (dptx-phy[0], offset 0x2200) = 0x2000
-    /* TODO: what is this read checking for? */
-    readl(phy->regs.dptx + 0x2200);
-    clear32(phy->regs.dptx + 0x2200, 0x0002);
+	// MMIO: R.4   0x23c542200 (dptx-phy[0], offset 0x2200) = 0x2002
+	// MMIO: R.4   0x23c542200 (dptx-phy[0], offset 0x2200) = 0x2002
+	// MMIO: W.4   0x23c542200 (dptx-phy[0], offset 0x2200) = 0x2000
+	/* TODO: what is this read checking for? */
+	readl(phy->regs.dptx + 0x2200);
+	clear32(phy->regs.dptx + 0x2200, 0x0002);
 
-    // MMIO: R.4   0x23c54100c (dptx-phy[0], offset 0x100c) = 0xf000
-    // MMIO: W.4   0x23c54100c (dptx-phy[0], offset 0x100c) = 0xf000
-    // MMIO: R.4   0x23c54100c (dptx-phy[0], offset 0x100c) = 0xf000
-    // MMIO: W.4   0x23c54100c (dptx-phy[0], offset 0x100c) = 0xf008
-    /* TODO: what is the setting/clearing? */
-    val_100c = readl(phy->regs.dptx + 0x100c);
-    writel(val_100c, phy->regs.dptx + 0x100c);
-    set32(phy->regs.dptx + 0x100c, 0x0008);
+	// MMIO: R.4   0x23c54100c (dptx-phy[0], offset 0x100c) = 0xf000
+	// MMIO: W.4   0x23c54100c (dptx-phy[0], offset 0x100c) = 0xf000
+	// MMIO: R.4   0x23c54100c (dptx-phy[0], offset 0x100c) = 0xf000
+	// MMIO: W.4   0x23c54100c (dptx-phy[0], offset 0x100c) = 0xf008
+	/* TODO: what is the setting/clearing? */
+	val_100c = readl(phy->regs.dptx + 0x100c);
+	writel(val_100c, phy->regs.dptx + 0x100c);
+	set32(phy->regs.dptx + 0x100c, 0x0008);
 
-    // MMIO: R.4   0x23c541014 (dptx-phy[0], offset 0x1014) = 0x1
-    sts_1014 = readl(phy->regs.dptx + 0x1014);
-    if (sts_1014 != 0x1)
-	    dev_dbg(phy->dev, "unexpected?: dptx[0x1014]: %02x\n", sts_1014);
+	// MMIO: R.4   0x23c541014 (dptx-phy[0], offset 0x1014) = 0x1
+	sts_1014 = readl(phy->regs.dptx + 0x1014);
+	if (sts_1014 != 0x1)
+		dev_dbg(phy->dev, "unexpected?: dptx[0x1014]: %02x\n", sts_1014);
 
-    // MMIO: R.4   0x23c54100c (dptx-phy[0], offset 0x100c) = 0xf008
-    // MMIO: W.4   0x23c54100c (dptx-phy[0], offset 0x100c) = 0xf000
-    clear32(phy->regs.dptx + 0x100c, 0x0008);
+	// MMIO: R.4   0x23c54100c (dptx-phy[0], offset 0x100c) = 0xf008
+	// MMIO: W.4   0x23c54100c (dptx-phy[0], offset 0x100c) = 0xf000
+	clear32(phy->regs.dptx + 0x100c, 0x0008);
 
-    // MMIO: R.4   0x23c541008 (dptx-phy[0], offset 0x1008) = 0x1
-    sts_1008 = readl(phy->regs.dptx + 0x1008);
-    if (sts_1008 != 0x1)
-	    dev_dbg(phy->dev, "unexpected?: dptx[0x1008]: %02x\n", sts_1008);
+	// MMIO: R.4   0x23c541008 (dptx-phy[0], offset 0x1008) = 0x1
+	sts_1008 = readl(phy->regs.dptx + 0x1008);
+	if (sts_1008 != 0x1)
+		dev_dbg(phy->dev, "unexpected?: dptx[0x1008]: %02x\n", sts_1008);
 
-    // MMIO: R.4   0x23c542220 (dptx-phy[0], offset 0x2220) = 0x11090a0
-    // MMIO: W.4   0x23c542220 (dptx-phy[0], offset 0x2220) = 0x1109020
-    clear32(phy->regs.dptx + 0x2220, 0x0000080);
+	// MMIO: R.4   0x23c542220 (dptx-phy[0], offset 0x2220) = 0x11090a0
+	// MMIO: W.4   0x23c542220 (dptx-phy[0], offset 0x2220) = 0x1109020
+	clear32(phy->regs.dptx + 0x2220, 0x0000080);
 
-    // MMIO: R.4   0x23c5420b0 (dptx-phy[0], offset 0x20b0) = 0x1e0e01c2
-    // MMIO: W.4   0x23c5420b0 (dptx-phy[0], offset 0x20b0) = 0x1e0e01c2
-    val_20b0 = readl(phy->regs.dptx + 0x20b0);
-    /* TODO: what happens on dptx-phy */
-    if (phy->hw.type == DPTX_PHY_T6020)
-	val_20b0 = (val_20b0 & ~0x3ff) | 0x2a3;
-    writel(val_20b0, phy->regs.dptx + 0x20b0);
+	// MMIO: R.4   0x23c5420b0 (dptx-phy[0], offset 0x20b0) = 0x1e0e01c2
+	// MMIO: W.4   0x23c5420b0 (dptx-phy[0], offset 0x20b0) = 0x1e0e01c2
+	val_20b0 = readl(phy->regs.dptx + 0x20b0);
+	/* TODO: what happens on dptx-phy */
+	if (phy->hw.type == DPTX_PHY_T6020)
+		val_20b0 = (val_20b0 & ~0x3ff) | 0x2a3;
+	writel(val_20b0, phy->regs.dptx + 0x20b0);
 
-    // MMIO: R.4   0x23c5420b4 (dptx-phy[0], offset 0x20b4) = 0x7fffffe
-    // MMIO: W.4   0x23c5420b4 (dptx-phy[0], offset 0x20b4) = 0x7fffffe
-    val_20b4 = readl(phy->regs.dptx + 0x20b4);
-    /* TODO: what happens on dptx-phy */
-    if (phy->hw.type == DPTX_PHY_T6020)
-	val_20b4 = (val_20b4 | 0x4000000) & ~0x0008000;
-    writel(val_20b4, phy->regs.dptx + 0x20b4);
+	// MMIO: R.4   0x23c5420b4 (dptx-phy[0], offset 0x20b4) = 0x7fffffe
+	// MMIO: W.4   0x23c5420b4 (dptx-phy[0], offset 0x20b4) = 0x7fffffe
+	val_20b4 = readl(phy->regs.dptx + 0x20b4);
+	/* TODO: what happens on dptx-phy */
+	if (phy->hw.type == DPTX_PHY_T6020)
+		val_20b4 = (val_20b4 | 0x4000000) & ~0x0008000;
+	writel(val_20b4, phy->regs.dptx + 0x20b4);
 
-    // MMIO: R.4   0x23c5420b4 (dptx-phy[0], offset 0x20b4) = 0x7fffffe
-    // MMIO: W.4   0x23c5420b4 (dptx-phy[0], offset 0x20b4) = 0x7fffffe
-    val_20b4 = readl(phy->regs.dptx + 0x20b4);
-    /* TODO: what happens on dptx-phy */
-    if (phy->hw.type == DPTX_PHY_T6020)
-	val_20b4 = (val_20b4 | 0x0000001) & ~0x0000004;
-    writel(val_20b4, phy->regs.dptx + 0x20b4);
+	// MMIO: R.4   0x23c5420b4 (dptx-phy[0], offset 0x20b4) = 0x7fffffe
+	// MMIO: W.4   0x23c5420b4 (dptx-phy[0], offset 0x20b4) = 0x7fffffe
+	val_20b4 = readl(phy->regs.dptx + 0x20b4);
+	/* TODO: what happens on dptx-phy */
+	if (phy->hw.type == DPTX_PHY_T6020)
+		val_20b4 = (val_20b4 | 0x0000001) & ~0x0000004;
+	writel(val_20b4, phy->regs.dptx + 0x20b4);
 
-    // MMIO: R.4   0x23c5420b8 (dptx-phy[0], offset 0x20b8) = 0x654800
-    // MMIO: W.4   0x23c5420b8 (dptx-phy[0], offset 0x20b8) = 0x654800
-    /* TODO: unclear */
-    set32(phy->regs.dptx + 0x20b8, 0);
-    // MMIO: R.4   0x23c5420b8 (dptx-phy[0], offset 0x20b8) = 0x654800
-    // MMIO: W.4   0x23c5420b8 (dptx-phy[0], offset 0x20b8) = 0x654800
-    /* TODO: unclear */
-    set32(phy->regs.dptx + 0x20b8, 0);
-    // MMIO: R.4   0x23c5420b8 (dptx-phy[0], offset 0x20b8) = 0x654800
-    // MMIO: W.4   0x23c5420b8 (dptx-phy[0], offset 0x20b8) = 0x654800
-    /* TODO: unclear */
-    if (phy->hw.type == DPTX_PHY_T6020)
-	set32(phy->regs.dptx + 0x20b8, 0x010000);
-    else
+	// MMIO: R.4   0x23c5420b8 (dptx-phy[0], offset 0x20b8) = 0x654800
+	// MMIO: W.4   0x23c5420b8 (dptx-phy[0], offset 0x20b8) = 0x654800
+	/* TODO: unclear */
 	set32(phy->regs.dptx + 0x20b8, 0);
-    // MMIO: R.4   0x23c5420b8 (dptx-phy[0], offset 0x20b8) = 0x654800
-    // MMIO: W.4   0x23c5420b8 (dptx-phy[0], offset 0x20b8) = 0x454800
-    clear32(phy->regs.dptx + 0x20b8, 0x200000);
+	// MMIO: R.4   0x23c5420b8 (dptx-phy[0], offset 0x20b8) = 0x654800
+	// MMIO: W.4   0x23c5420b8 (dptx-phy[0], offset 0x20b8) = 0x654800
+	/* TODO: unclear */
+	set32(phy->regs.dptx + 0x20b8, 0);
+	// MMIO: R.4   0x23c5420b8 (dptx-phy[0], offset 0x20b8) = 0x654800
+	// MMIO: W.4   0x23c5420b8 (dptx-phy[0], offset 0x20b8) = 0x654800
+	/* TODO: unclear */
+	if (phy->hw.type == DPTX_PHY_T6020)
+		set32(phy->regs.dptx + 0x20b8, 0x010000);
+	else
+		set32(phy->regs.dptx + 0x20b8, 0);
+	// MMIO: R.4   0x23c5420b8 (dptx-phy[0], offset 0x20b8) = 0x654800
+	// MMIO: W.4   0x23c5420b8 (dptx-phy[0], offset 0x20b8) = 0x454800
+	clear32(phy->regs.dptx + 0x20b8, 0x200000);
 
-    // MMIO: R.4   0x23c5420b8 (dptx-phy[0], offset 0x20b8) = 0x454800
-    // MMIO: W.4   0x23c5420b8 (dptx-phy[0], offset 0x20b8) = 0x454800
-    /* TODO: unclear */
-    set32(phy->regs.dptx + 0x20b8, 0);
+	// MMIO: R.4   0x23c5420b8 (dptx-phy[0], offset 0x20b8) = 0x454800
+	// MMIO: W.4   0x23c5420b8 (dptx-phy[0], offset 0x20b8) = 0x454800
+	/* TODO: unclear */
+	set32(phy->regs.dptx + 0x20b8, 0);
 
-    // MMIO: R.4   0x23c5000a0 (dptx-phy[1], offset 0xa0) = 0x0
-    // MMIO: W.4   0x23c5000a0 (dptx-phy[1], offset 0xa0) = 0x8
-    // MMIO: R.4   0x23c5000a0 (dptx-phy[1], offset 0xa0) = 0x8
-    // MMIO: W.4   0x23c5000a0 (dptx-phy[1], offset 0xa0) = 0xc
-    // MMIO: R.4   0x23c5000a0 (dptx-phy[1], offset 0xa0) = 0xc
-    // MMIO: W.4   0x23c5000a0 (dptx-phy[1], offset 0xa0) = 0x4000c
-    // MMIO: R.4   0x23c5000a0 (dptx-phy[1], offset 0xa0) = 0x4000c
-    // MMIO: W.4   0x23c5000a0 (dptx-phy[1], offset 0xa0) = 0xc
-    // MMIO: R.4   0x23c5000a0 (dptx-phy[1], offset 0xa0) = 0xc
-    // MMIO: W.4   0x23c5000a0 (dptx-phy[1], offset 0xa0) = 0x8000c
-    // MMIO: R.4   0x23c5000a0 (dptx-phy[1], offset 0xa0) = 0x8000c
-    // MMIO: W.4   0x23c5000a0 (dptx-phy[1], offset 0xa0) = 0xc
-    // MMIO: R.4   0x23c5000a0 (dptx-phy[1], offset 0xa0) = 0xc
-    // MMIO: W.4   0x23c5000a0 (dptx-phy[1], offset 0xa0) = 0x8
-    // MMIO: R.4   0x23c5000a0 (dptx-phy[1], offset 0xa0) = 0x8
-    // MMIO: W.4   0x23c5000a0 (dptx-phy[1], offset 0xa0) = 0x0
-    set32(phy->regs.core + 0xa0, 0x8);
-    set32(phy->regs.core + 0xa0, 0x4);
-    set32(phy->regs.core + 0xa0, 0x40000);
-    clear32(phy->regs.core + 0xa0, 0x40000);
-    set32(phy->regs.core + 0xa0, 0x80000);
-    clear32(phy->regs.core + 0xa0, 0x80000);
-    clear32(phy->regs.core + 0xa0, 0x4);
-    clear32(phy->regs.core + 0xa0, 0x8);
+	// MMIO: R.4   0x23c5000a0 (dptx-phy[1], offset 0xa0) = 0x0
+	// MMIO: W.4   0x23c5000a0 (dptx-phy[1], offset 0xa0) = 0x8
+	// MMIO: R.4   0x23c5000a0 (dptx-phy[1], offset 0xa0) = 0x8
+	// MMIO: W.4   0x23c5000a0 (dptx-phy[1], offset 0xa0) = 0xc
+	// MMIO: R.4   0x23c5000a0 (dptx-phy[1], offset 0xa0) = 0xc
+	// MMIO: W.4   0x23c5000a0 (dptx-phy[1], offset 0xa0) = 0x4000c
+	// MMIO: R.4   0x23c5000a0 (dptx-phy[1], offset 0xa0) = 0x4000c
+	// MMIO: W.4   0x23c5000a0 (dptx-phy[1], offset 0xa0) = 0xc
+	// MMIO: R.4   0x23c5000a0 (dptx-phy[1], offset 0xa0) = 0xc
+	// MMIO: W.4   0x23c5000a0 (dptx-phy[1], offset 0xa0) = 0x8000c
+	// MMIO: R.4   0x23c5000a0 (dptx-phy[1], offset 0xa0) = 0x8000c
+	// MMIO: W.4   0x23c5000a0 (dptx-phy[1], offset 0xa0) = 0xc
+	// MMIO: R.4   0x23c5000a0 (dptx-phy[1], offset 0xa0) = 0xc
+	// MMIO: W.4   0x23c5000a0 (dptx-phy[1], offset 0xa0) = 0x8
+	// MMIO: R.4   0x23c5000a0 (dptx-phy[1], offset 0xa0) = 0x8
+	// MMIO: W.4   0x23c5000a0 (dptx-phy[1], offset 0xa0) = 0x0
+	set32(phy->regs.core + 0xa0, 0x8);
+	set32(phy->regs.core + 0xa0, 0x4);
+	set32(phy->regs.core + 0xa0, 0x40000);
+	clear32(phy->regs.core + 0xa0, 0x40000);
+	set32(phy->regs.core + 0xa0, 0x80000);
+	clear32(phy->regs.core + 0xa0, 0x80000);
+	clear32(phy->regs.core + 0xa0, 0x4);
+	clear32(phy->regs.core + 0xa0, 0x8);
 
-    // MMIO: R.4   0x23c542000 (dptx-phy[0], offset 0x2000) = 0x2
-    // MMIO: W.4   0x23c542000 (dptx-phy[0], offset 0x2000) = 0x2
-    /* TODO: unclear */
-    set32(phy->regs.dptx + 0x2000, 0x0);
+	// MMIO: R.4   0x23c542000 (dptx-phy[0], offset 0x2000) = 0x2
+	// MMIO: W.4   0x23c542000 (dptx-phy[0], offset 0x2000) = 0x2
+	/* TODO: unclear */
+	set32(phy->regs.dptx + 0x2000, 0x0);
 
-    // MMIO: R.4   0x23c542018 (dptx-phy[0], offset 0x2018) = 0x0
-    // MMIO: W.4   0x23c542018 (dptx-phy[0], offset 0x2018) = 0x0
-    clear32(phy->regs.dptx + 0x2018, 0x0);
+	// MMIO: R.4   0x23c542018 (dptx-phy[0], offset 0x2018) = 0x0
+	// MMIO: W.4   0x23c542018 (dptx-phy[0], offset 0x2018) = 0x0
+	clear32(phy->regs.dptx + 0x2018, 0x0);
 
-    // MMIO: R.4   0x23c54100c (dptx-phy[0], offset 0x100c) = 0xf000
-    // MMIO: W.4   0x23c54100c (dptx-phy[0], offset 0x100c) = 0xf007
-    set32(phy->regs.dptx + 0x100c, 0x0007);
-    // MMIO: R.4   0x23c54100c (dptx-phy[0], offset 0x100c) = 0xf007
-    // MMIO: W.4   0x23c54100c (dptx-phy[0], offset 0x100c) = 0xf00f
-    set32(phy->regs.dptx + 0x100c, 0x0008);
+	// MMIO: R.4   0x23c54100c (dptx-phy[0], offset 0x100c) = 0xf000
+	// MMIO: W.4   0x23c54100c (dptx-phy[0], offset 0x100c) = 0xf007
+	set32(phy->regs.dptx + 0x100c, 0x0007);
+	// MMIO: R.4   0x23c54100c (dptx-phy[0], offset 0x100c) = 0xf007
+	// MMIO: W.4   0x23c54100c (dptx-phy[0], offset 0x100c) = 0xf00f
+	set32(phy->regs.dptx + 0x100c, 0x0008);
 
-    // MMIO: R.4   0x23c541014 (dptx-phy[0], offset 0x1014) = 0x38f
-    sts_1014 = readl(phy->regs.dptx + 0x1014);
-    if (sts_1014 != 0x38f)
-	    dev_dbg(phy->dev, "unexpected?: dptx[0x1014]: %02x\n", sts_1014);
+	// MMIO: R.4   0x23c541014 (dptx-phy[0], offset 0x1014) = 0x38f
+	sts_1014 = readl(phy->regs.dptx + 0x1014);
+	if (sts_1014 != 0x38f)
+		dev_dbg(phy->dev, "unexpected?: dptx[0x1014]: %02x\n", sts_1014);
 
-    // MMIO: R.4   0x23c54100c (dptx-phy[0], offset 0x100c) = 0xf00f
-    // MMIO: W.4   0x23c54100c (dptx-phy[0], offset 0x100c) = 0xf007
-    clear32(phy->regs.dptx + 0x100c, 0x0008);
+	// MMIO: R.4   0x23c54100c (dptx-phy[0], offset 0x100c) = 0xf00f
+	// MMIO: W.4   0x23c54100c (dptx-phy[0], offset 0x100c) = 0xf007
+	clear32(phy->regs.dptx + 0x100c, 0x0008);
 
-    // MMIO: R.4   0x23c541008 (dptx-phy[0], offset 0x1008) = 0x9
-    sts_1008 = readl(phy->regs.dptx + 0x1008);
-    if (sts_1008 != 0x9)
-	    dev_dbg(phy->dev, "unexpected?: dptx[0x1008]: %02x\n", sts_1008);
+	// MMIO: R.4   0x23c541008 (dptx-phy[0], offset 0x1008) = 0x9
+	sts_1008 = readl(phy->regs.dptx + 0x1008);
+	if (sts_1008 != 0x9)
+		dev_dbg(phy->dev, "unexpected?: dptx[0x1008]: %02x\n", sts_1008);
 
-    // MMIO: R.4   0x23c542200 (dptx-phy[0], offset 0x2200) = 0x2000
-    // MMIO: W.4   0x23c542200 (dptx-phy[0], offset 0x2200) = 0x2002
-    set32(phy->regs.dptx + 0x2200, 0x0002);
+	// MMIO: R.4   0x23c542200 (dptx-phy[0], offset 0x2200) = 0x2000
+	// MMIO: W.4   0x23c542200 (dptx-phy[0], offset 0x2200) = 0x2002
+	set32(phy->regs.dptx + 0x2200, 0x0002);
 
-    // MMIO: R.4   0x23c545010 (dptx-phy[0], offset 0x5010) = 0x18003000
-    // MMIO: W.4   0x23c545010 (dptx-phy[0], offset 0x5010) = 0x18003000
-    // MMIO: R.4   0x23c546010 (dptx-phy[0], offset 0x6010) = 0x18003000
-    // MMIO: W.4   0x23c546010 (dptx-phy[0], offset 0x6010) = 0x18003000
-    // MMIO: R.4   0x23c547010 (dptx-phy[0], offset 0x7010) = 0x18003000
-    // MMIO: W.4   0x23c547010 (dptx-phy[0], offset 0x7010) = 0x18003000
-    // MMIO: R.4   0x23c548010 (dptx-phy[0], offset 0x8010) = 0x18003000
-    // MMIO: W.4   0x23c548010 (dptx-phy[0], offset 0x8010) = 0x18003000
-    writel(0x18003000, phy->regs.dptx + 0x8010);
-    for (u32 loff = DPTX_LANE0_OFFSET; loff < DPTX_LANE_END; loff += DPTX_LANE_STRIDE) {
-	u32 val_l010 = readl(phy->regs.dptx + loff + 0x10);
-	writel(val_l010, phy->regs.dptx + loff + 0x10);
-    }
+	// MMIO: R.4   0x23c545010 (dptx-phy[0], offset 0x5010) = 0x18003000
+	// MMIO: W.4   0x23c545010 (dptx-phy[0], offset 0x5010) = 0x18003000
+	// MMIO: R.4   0x23c546010 (dptx-phy[0], offset 0x6010) = 0x18003000
+	// MMIO: W.4   0x23c546010 (dptx-phy[0], offset 0x6010) = 0x18003000
+	// MMIO: R.4   0x23c547010 (dptx-phy[0], offset 0x7010) = 0x18003000
+	// MMIO: W.4   0x23c547010 (dptx-phy[0], offset 0x7010) = 0x18003000
+	// MMIO: R.4   0x23c548010 (dptx-phy[0], offset 0x8010) = 0x18003000
+	// MMIO: W.4   0x23c548010 (dptx-phy[0], offset 0x8010) = 0x18003000
+	writel(0x18003000, phy->regs.dptx + 0x8010);
+	for (u32 loff = DPTX_LANE0_OFFSET; loff < DPTX_LANE_END; loff += DPTX_LANE_STRIDE) {
+		u32 val_l010 = readl(phy->regs.dptx + loff + 0x10);
+		writel(val_l010, phy->regs.dptx + loff + 0x10);
+	}
 
-    // MMIO: R.4   0x23c544000 (dptx-phy[0], offset 0x4000) = 0x41021ac
-    // MMIO: W.4   0x23c544000 (dptx-phy[0], offset 0x4000) = 0x51021ac
-    set32(phy->regs.dptx + 0x4000, 0x1000000);
-    // MMIO: R.4   0x23c544000 (dptx-phy[0], offset 0x4000) = 0x51021ac
-    // MMIO: W.4   0x23c544000 (dptx-phy[0], offset 0x4000) = 0x71021ac
-    set32(phy->regs.dptx + 0x4000, 0x2000000);
+	// MMIO: R.4   0x23c544000 (dptx-phy[0], offset 0x4000) = 0x41021ac
+	// MMIO: W.4   0x23c544000 (dptx-phy[0], offset 0x4000) = 0x51021ac
+	set32(phy->regs.dptx + 0x4000, 0x1000000);
+	// MMIO: R.4   0x23c544000 (dptx-phy[0], offset 0x4000) = 0x51021ac
+	// MMIO: W.4   0x23c544000 (dptx-phy[0], offset 0x4000) = 0x71021ac
+	set32(phy->regs.dptx + 0x4000, 0x2000000);
 
-    // MMIO: R.4   0x23c544004 (dptx-phy[0], offset 0x4004) = 0x41
-    // MMIO: W.4   0x23c544004 (dptx-phy[0], offset 0x4004) = 0x49
-    set32(phy->regs.dptx + 0x4004, 0x08);
+	// MMIO: R.4   0x23c544004 (dptx-phy[0], offset 0x4004) = 0x41
+	// MMIO: W.4   0x23c544004 (dptx-phy[0], offset 0x4004) = 0x49
+	set32(phy->regs.dptx + 0x4004, 0x08);
 
-    // MMIO: R.4   0x23c544000 (dptx-phy[0], offset 0x4000) = 0x71021ac
-    // MMIO: W.4   0x23c544000 (dptx-phy[0], offset 0x4000) = 0x71021ec
-    set32(phy->regs.dptx + 0x4000, 0x0000040);
+	// MMIO: R.4   0x23c544000 (dptx-phy[0], offset 0x4000) = 0x71021ac
+	// MMIO: W.4   0x23c544000 (dptx-phy[0], offset 0x4000) = 0x71021ec
+	set32(phy->regs.dptx + 0x4000, 0x0000040);
 
-    // MMIO: R.4   0x23c544004 (dptx-phy[0], offset 0x4004) = 0x49
-    // MMIO: W.4   0x23c544004 (dptx-phy[0], offset 0x4004) = 0x48
-    clear32(phy->regs.dptx + 0x4004, 0x01);
+	// MMIO: R.4   0x23c544004 (dptx-phy[0], offset 0x4004) = 0x49
+	// MMIO: W.4   0x23c544004 (dptx-phy[0], offset 0x4004) = 0x48
+	clear32(phy->regs.dptx + 0x4004, 0x01);
 
-    return 0;
+	return 0;
 }
 
 static int dptx_phy_set_mode(struct phy *phy, enum phy_mode mode, int submode)

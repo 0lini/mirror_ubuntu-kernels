@@ -112,7 +112,7 @@ static struct inode *v9fs_qid_iget_dotl(struct super_block *sb,
 	inode = iget5_locked(sb, QID2INO(qid), test, v9fs_set_inode_dotl, st);
 	if (!inode)
 		return ERR_PTR(-ENOMEM);
-	if (!(inode->i_state & I_NEW))
+	if (!(inode_state_read_once(inode) & I_NEW))
 		return inode;
 	/*
 	 * initialize the inode with the stat info
@@ -238,20 +238,16 @@ v9fs_vfs_atomic_open_dotl(struct inode *dir, struct dentry *dentry,
 	struct p9_fid *dfid = NULL, *ofid = NULL;
 	struct v9fs_session_info *v9ses;
 	struct posix_acl *pacl = NULL, *dacl = NULL;
-	struct dentry *res = NULL;
 
 	if (d_in_lookup(dentry)) {
-		res = v9fs_vfs_lookup(dir, dentry, 0);
-		if (IS_ERR(res))
-			return PTR_ERR(res);
-
-		if (res)
-			dentry = res;
+		struct dentry *res = v9fs_vfs_lookup(dir, dentry, 0);
+		if (res || d_really_is_positive(dentry))
+			return	finish_no_open(file, res);
 	}
 
 	/* Only creates */
-	if (!(flags & O_CREAT) || d_really_is_positive(dentry))
-		return	finish_no_open(file, res);
+	if (!(flags & O_CREAT))
+		return	finish_no_open(file, NULL);
 
 	v9ses = v9fs_inode2v9ses(dir);
 
@@ -337,7 +333,6 @@ out:
 	p9_fid_put(ofid);
 	p9_fid_put(fid);
 	v9fs_put_acl(dacl, pacl);
-	dput(res);
 	return err;
 }
 
@@ -639,10 +634,12 @@ v9fs_stat2inode_dotl(struct p9_stat_dotl *stat, struct inode *inode,
 		mode |= inode->i_mode & ~S_IALLUGO;
 		inode->i_mode = mode;
 
-		v9inode->netfs.remote_i_size = stat->st_size;
+		spin_lock(&inode->i_lock);
+		netfs_write_remote_i_size(inode, stat->st_size);
 		if (!(flags & V9FS_STAT2INODE_KEEP_ISIZE))
-			v9fs_i_size_write(inode, stat->st_size);
+			i_size_write(inode, stat->st_size);
 		inode->i_blocks = stat->st_blocks;
+		spin_unlock(&inode->i_lock);
 	} else {
 		if (stat->st_result_mask & P9_STATS_ATIME) {
 			inode_set_atime(inode, stat->st_atime_sec,
@@ -667,13 +664,15 @@ v9fs_stat2inode_dotl(struct p9_stat_dotl *stat, struct inode *inode,
 			mode |= inode->i_mode & ~S_IALLUGO;
 			inode->i_mode = mode;
 		}
+		spin_lock(&inode->i_lock);
 		if (!(flags & V9FS_STAT2INODE_KEEP_ISIZE) &&
 		    stat->st_result_mask & P9_STATS_SIZE) {
-			v9inode->netfs.remote_i_size = stat->st_size;
-			v9fs_i_size_write(inode, stat->st_size);
+			netfs_write_remote_i_size(inode, stat->st_size);
+			i_size_write(inode, stat->st_size);
 		}
 		if (stat->st_result_mask & P9_STATS_BLOCKS)
 			inode->i_blocks = stat->st_blocks;
+		spin_unlock(&inode->i_lock);
 	}
 	if (stat->st_result_mask & P9_STATS_GEN)
 		inode->i_generation = stat->st_gen;

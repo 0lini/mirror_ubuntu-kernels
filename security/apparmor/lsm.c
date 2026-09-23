@@ -17,6 +17,7 @@
 #include <linux/ptrace.h>
 #include <linux/ctype.h>
 #include <linux/sysctl.h>
+#include <linux/sysfs.h>
 #include <linux/audit.h>
 #include <linux/nsproxy.h>
 #include <linux/ipc_namespace.h>
@@ -35,6 +36,7 @@
 #include "include/audit.h"
 #include "include/capability.h"
 #include "include/cred.h"
+#include "include/crypto.h"
 #include "include/file.h"
 #include "include/inode.h"
 #include "include/ipc.h"
@@ -123,7 +125,7 @@ static void apparmor_task_free(struct task_struct *task)
 }
 
 static int apparmor_task_alloc(struct task_struct *task,
-			       unsigned long clone_flags)
+			       u64 clone_flags)
 {
 	struct aa_task_ctx *new = task_ctx(task);
 
@@ -693,33 +695,26 @@ static void apparmor_file_free_security(struct file *file)
 		aa_put_label(rcu_access_pointer(ctx->label));
 }
 
-static int common_file_perm(const char *op, struct file *file, u32 mask,
-			    bool in_atomic)
+static int common_file_perm(const char *op, struct file *file, u32 mask)
 {
 	struct aa_label *label;
 	int error = 0;
-	bool needput;
 
-	/* don't reaudit files closed during inheritance */
-	if (unlikely(file->f_path.dentry == aa_null.dentry))
-		return -EACCES;
-
-	label = __begin_current_label_crit_section(&needput);
-	error = aa_file_perm(op, current_cred(), label, file, mask, in_atomic);
-	__end_current_label_crit_section(label, needput);
+	label = begin_current_label_crit_section();
+	error = aa_file_perm(op, current_cred(), label, file, mask, false);
+	end_current_label_crit_section(label);
 
 	return error;
 }
 
 static int apparmor_file_receive(struct file *file)
 {
-	return common_file_perm(OP_FRECEIVE, file, aa_map_file_to_perms(file),
-				false);
+	return common_file_perm(OP_FRECEIVE, file, aa_map_file_to_perms(file));
 }
 
 static int apparmor_file_permission(struct file *file, int mask)
 {
-	return common_file_perm(OP_FPERM, file, mask, true);
+	return common_file_perm(OP_FPERM, file, mask);
 }
 
 static int apparmor_file_lock(struct file *file, unsigned int cmd)
@@ -729,11 +724,11 @@ static int apparmor_file_lock(struct file *file, unsigned int cmd)
 	if (cmd == F_WRLCK)
 		mask |= MAY_WRITE;
 
-	return common_file_perm(OP_FLOCK, file, mask, false);
+	return common_file_perm(OP_FLOCK, file, mask);
 }
 
 static int common_mmap(const char *op, struct file *file, unsigned long prot,
-		       unsigned long flags, bool in_atomic)
+		       unsigned long flags)
 {
 	int mask = 0;
 
@@ -751,21 +746,20 @@ static int common_mmap(const char *op, struct file *file, unsigned long prot,
 	if (prot & PROT_EXEC)
 		mask |= AA_EXEC_MMAP;
 
-	return common_file_perm(op, file, mask, in_atomic);
+	return common_file_perm(op, file, mask);
 }
 
 static int apparmor_mmap_file(struct file *file, unsigned long reqprot,
 			      unsigned long prot, unsigned long flags)
 {
-	return common_mmap(OP_FMMAP, file, prot, flags, false);
+	return common_mmap(OP_FMMAP, file, prot, flags);
 }
 
 static int apparmor_file_mprotect(struct vm_area_struct *vma,
 				  unsigned long reqprot, unsigned long prot)
 {
 	return common_mmap(OP_FMPROT, vma->vm_file, prot,
-			   !(vma->vm_flags & VM_SHARED) ? MAP_PRIVATE : 0,
-			   false);
+			   !(vma->vm_flags & VM_SHARED) ? MAP_PRIVATE : 0);
 }
 
 #ifdef CONFIG_IO_URING
@@ -1030,25 +1024,23 @@ static int apparmor_getprocattr(struct task_struct *task, const char *name,
 				char **value)
 {
 	int error = -ENOENT;
-	/* released below */
-	const struct cred *cred = get_task_cred(task);
-	struct aa_task_ctx *ctx = task_ctx(current);
 	struct aa_label *label = NULL;
 
+	rcu_read_lock();
 	if (strcmp(name, "current") == 0)
-		label = aa_get_newest_label(cred_label(cred));
-	else if (strcmp(name, "prev") == 0  && ctx->previous)
-		label = aa_get_newest_label(ctx->previous);
-	else if (strcmp(name, "exec") == 0 && ctx->onexec)
-		label = aa_get_newest_label(ctx->onexec);
+		label = aa_get_newest_cred_label(__task_cred(task));
+	else if (strcmp(name, "prev") == 0  && task_ctx(task)->previous)
+		label = aa_get_newest_label(task_ctx(task)->previous);
+	else if (strcmp(name, "exec") == 0 && task_ctx(task)->onexec)
+		label = aa_get_newest_label(task_ctx(task)->onexec);
 	else
 		error = -EINVAL;
+	rcu_read_unlock();
 
 	if (label)
 		error = aa_getprocattr(label, value, true);
 
 	aa_put_label(label);
-	put_cred(cred);
 
 	return error;
 }
@@ -1066,12 +1058,9 @@ static int do_setattr(u64 attr, void *value, size_t size)
 
 	/* AppArmor requires that the buffer must be null terminated atm */
 	if (args[size - 1] != '\0') {
-		/* null terminate */
-		largs = args = kmalloc(size + 1, GFP_KERNEL);
+		largs = args = kmemdup_nul(value, size, GFP_KERNEL);
 		if (!args)
 			return -ENOMEM;
-		memcpy(args, value, size);
-		args[size] = '\0';
 	}
 
 	error = -EINVAL;
@@ -1752,54 +1741,14 @@ static int apparmor_socket_shutdown(struct socket *sock, int how)
 	return aa_sock_perm(OP_SHUTDOWN, AA_MAY_SHUTDOWN, sock);
 }
 
-#ifdef CONFIG_NETWORK_SECMARK
-/**
- * apparmor_socket_sock_rcv_skb - check perms before associating skb to sk
- * @sk: sk to associate @skb with
- * @skb: skb to check for perms
- *
- * Note: can not sleep may be called with locks held
- *
- * dont want protocol specific in __skb_recv_datagram()
- * to deny an incoming connection  socket_sock_rcv_skb()
- */
-static int apparmor_socket_sock_rcv_skb(struct sock *sk, struct sk_buff *skb)
-{
-	struct aa_sk_ctx *ctx = aa_sock(sk);
-	int error;
-
-	if (!aa_secmark() || !skb->secmark)
-		return 0;
-
-	/*
-	 * If reach here before socket_post_create hook is called, in which
-	 * case label is null, drop the packet.
-	 */
-	if (!rcu_access_pointer(ctx->label))
-		return -EACCES;
-
-	rcu_read_lock();
-	error = apparmor_secmark_check(rcu_dereference(ctx->label), OP_RECVMSG,
-				       AA_MAY_RECEIVE, skb->secmark, sk);
-	rcu_read_unlock();
-
-	return error;
-}
-#endif
-
-
 static struct aa_label *sk_peer_get_label(struct sock *sk)
 {
 	struct aa_sk_ctx *ctx = aa_sock(sk);
-	struct aa_label *label = ERR_PTR(-ENOPROTOOPT);
 
 	if (rcu_access_pointer(ctx->peer))
 		return aa_get_label_rcu(&ctx->peer);
 
-	if (sk->sk_family != PF_UNIX)
-		return ERR_PTR(-ENOPROTOOPT);
-
-	return label;
+	return ERR_PTR(-ENOPROTOOPT);
 }
 
 /**
@@ -1891,23 +1840,287 @@ static void apparmor_sock_graft(struct sock *sk, struct socket *parent)
 }
 
 #ifdef CONFIG_NETWORK_SECMARK
-static int apparmor_inet_conn_request(const struct sock *sk, struct sk_buff *skb,
-				      struct request_sock *req)
-{
-	struct aa_sk_ctx *ctx = aa_sock(sk);
-	int error;
 
-	if (!aa_secmark() || !skb->secmark)
+/* secmark reference count */
+static atomic_t apparmor_secmark_refcount = ATOMIC_INIT(0);
+
+
+/* count of rules using secmark that have been loaded into netfilter
+ * would be nice if it was per packet, or least per secid so we know which ids
+ * to pin
+ */
+static void apparmor_secmark_refcount_inc(void)
+{
+	atomic_inc(&apparmor_secmark_refcount);
+}
+
+/* rule using secmark has been removed from netfilter */
+static void apparmor_secmark_refcount_dec(void)
+{
+	atomic_dec(&apparmor_secmark_refcount);
+}
+
+static inline bool aa_secmark_enabled(void)
+{
+	return (aa_secmark() && aa_skb_packet_mediation);
+}
+
+static inline bool aa_mediates_secmark(struct aa_label *label)
+{
+	return aa_secmark_enabled() &&
+		(label_mediates(label, AA_CLASS_NETV9_SKB) ||
+		 atomic_read(&apparmor_secmark_refcount));
+}
+
+/* check if current process can use secmark to set a label on the packet
+ * only done in mangle or security tables
+ * @sid is the label that is going to be set
+ */
+static int apparmor_secmark_relabel_packet(u32 sid)
+{
+	if (!aa_secmark_enabled())
 		return 0;
 
+	return aa_secmark_relabel_packet(sid);
+}
+
+#endif /* CONFIG_NETWROK_SECMARK */
+
+
+
+/**
+ * apparmor_socket_sock_rcv_skb - check perms before associating skb to sk
+ * @sk: sk to associate @skb with
+ * @skb: skb to check for perms
+ *
+ * Note: can not sleep may be called with locks held
+ *
+ * dont want protocol specific in __skb_recv_datagram()
+ * to deny an incoming connection  socket_sock_rcv_skb()
+ */
+static int apparmor_socket_sock_rcv_skb(struct sock *sk, struct sk_buff *skb)
+{
+	struct aa_sk_ctx *ctx = aa_sock(sk);
+	struct aa_label *label;
+	int error = 0;
+
+	if (!aa_secmark_enabled())
+		return 0;
+	if (sk->sk_family != PF_INET && sk->sk_family != PF_INET6)
+		return 0;
+
+	/*
+	 * If reach here before socket_post_create hook is called, in which
+	 * case label is null, drop the packet.
+	 */
+	if (!rcu_access_pointer(ctx->label))
+		return -EACCES;
+
 	rcu_read_lock();
-	error = apparmor_secmark_check(rcu_dereference(ctx->label), OP_CONNECT,
-				       AA_MAY_CONNECT, skb->secmark, sk);
+	label = rcu_dereference(ctx->label);
+	if (label_mediates(label, AA_CLASS_NETV9_SKB) || skb->secmark)
+		/* receive uses socket label as proxy
+		 * may do interface processing without SECMARK
+		 */
+		error = __aa_sock_rcv_skb(label, sk, skb);
+	/* else none of the profiles in label mediate skbs &&
+	 * the skb is unlabeled
+	 */
 	rcu_read_unlock();
 
 	return error;
 }
-#endif
+
+/* Accept an incoming connection request
+ */
+static int apparmor_inet_conn_request(const struct sock *sk,
+				      struct sk_buff *skb,
+				      struct request_sock *req)
+{
+	struct aa_sk_ctx *ctx = aa_sock(sk);
+	struct aa_label *label;
+	int error = 0;
+
+	if (!aa_secmark_enabled())
+		return 0;
+
+	rcu_read_lock();
+	label = rcu_dereference(ctx->label);
+	if (label_mediates(label, AA_CLASS_NETV9_SKB) || skb->secmark)
+		/* receive uses socket label as proxy
+		 * may do interface processing without SECMARK
+		 */
+		error = __aa_inet_conn_request(label, sk, skb, req);
+	/* else none of the profiles in label mediate skbs &&
+	 * the skb is unlabeled
+	 */
+	rcu_read_unlock();
+
+	return error;
+}
+
+
+#ifdef CONFIG_NETFILTER
+
+static unsigned int apparmor_ip_postroute(void *priv,
+					  struct sk_buff *skb,
+					  const struct nf_hook_state *state)
+{
+	struct aa_sk_ctx *ctx;
+	struct aa_label *label;
+	struct sock *sk;
+	int error = 0;
+
+	/* we need the secmark for postroute mediation */
+	if (!aa_secmark_enabled() || !skb->secmark)
+		return NF_ACCEPT;
+
+	sk = skb_to_full_sk(skb);
+	if (sk == NULL) {
+		if (skb->skb_iif)
+			/* Forwarded packet, not handled atm */
+			return NF_ACCEPT;
+		/* kernel sending a packet - no need to look at secmark */
+		label = kernel_t;
+	} else if (sk_listener(sk)) {
+		/* locally generated SYN_ACK - regenerate below using ctx */
+	} else {
+		/* locally generated packet - look at skb and ctx below*/
+	}
+
+	ctx = aa_sock(sk);
+	rcu_read_lock();
+	if (!label)
+		label = aa_secid_to_label(skb->secmark); /* may be NULL */
+	if (!label)
+		label = rcu_dereference(ctx->label);
+	if (label && label_mediates(label, AA_CLASS_NETV9_SKB))
+		error = __aa_ip_postroute(label, sk, skb, state);
+	rcu_read_unlock();
+
+	if (error)
+		return NF_DROP_ERR(-ECONNREFUSED);
+
+	return NF_ACCEPT;
+}
+
+
+static unsigned int apparmor_ip_localout(void *priv, struct sk_buff *skb,
+				       const struct nf_hook_state *state)
+{
+	struct aa_label *label, *out;
+	bool needput;
+
+	if (!aa_secmark_enabled())
+		return NF_ACCEPT;
+
+	label = __begin_current_label_crit_section(&needput);
+	if (!label_mediates(label, AA_CLASS_NETV9_SKB)) {
+		/* apparmor isn't going to do iface or packet based
+		 * filtering so bail.
+		 */
+		AA_DEBUG_LABEL(label, DEBUG_SKB, "label does not mediate skb");
+		end_current_label_crit_section(label);
+		return NF_ACCEPT;
+	}
+
+	struct sock *sk = skb_to_full_sk(skb);
+
+	if (sk) {
+		if (sk_listener(sk)) {
+			/* socket is in listening state, packet is a SYN-ACK
+			 * If using socket as proxy would need conn/request
+			 * socket, but only have parent.
+			 * However unless socket perms are delegated not
+			 * labeling based on socket but sending task
+			 */
+			if (aa_g_debug & DEBUG_SKB) {
+				rcu_read_lock();
+				struct aa_label *sklabel = aa_get_label(aa_sock(sk)->label);
+
+				rcu_read_unlock();
+				aa_put_label(sklabel);
+
+			}
+			AA_DEBUG_LABEL(label, DEBUG_SKB, "sk_listener");
+			return NF_ACCEPT;
+		}
+		/* TODO: support delegation via socket label instead of
+		 * task
+		 */
+		out = __aa_ip_localout(label, sk, skb);
+	} else {
+		out = kernel_t;
+	}
+	__end_current_label_crit_section(label, needput);
+
+	if (IS_ERR(out))
+		return NF_DROP_ERR(PTR_ERR(out));
+
+	if (!out)
+		/* all profiles decline to provide a label */
+		out = unlabeled_t;
+
+	/* put mark on packet */
+	aa_pin_secid(out);
+	skb->secmark = out->secid;
+	if (out != unlabeled_t && out != kernel_t)
+		aa_put_label(out);
+
+	return NF_ACCEPT;
+}
+
+/* HOOKS requiring NETFILTER, and may require SECMARK */
+static const struct nf_hook_ops apparmor_nf_ops[] = {
+	{
+		.hook =         apparmor_ip_localout,
+		.pf =           NFPROTO_IPV4,
+		.hooknum =      NF_INET_LOCAL_OUT,
+		.priority =     NF_IP_PRI_SELINUX_FIRST,
+	},
+#ifdef CONFIG_NETWORK_SECMARK
+	{
+		.hook =         apparmor_ip_postroute,
+		.pf =           NFPROTO_IPV4,
+		.hooknum =      NF_INET_POST_ROUTING,
+		.priority =     NF_IP_PRI_SELINUX_FIRST,
+	},
+	/* ip_forward goes here is apparmor ever supports it
+	 *{
+	 *	.hook =		apparmor_ip_forward,
+	 *	.pf =		NFPROTO_IPV4,
+	 *	.hooknum =	NF_INET_FORWARD,
+	 *	.priority =	NF_IP_PRI_SELINUX_FIRST,
+	 *},
+	 */
+#endif /* CONFIG_NETWORK_SECMARK */
+
+#if IS_ENABLED(CONFIG_IPV6)
+	{
+		.hook =         apparmor_ip_localout,
+		.pf =           NFPROTO_IPV6,
+		.hooknum =      NF_INET_LOCAL_OUT,
+		.priority =     NF_IP6_PRI_SELINUX_FIRST,
+	},
+#ifdef CONFIG_NETWORK_SECMARK
+	{
+		.hook =         apparmor_ip_postroute,
+		.pf =           NFPROTO_IPV6,
+		.hooknum =      NF_INET_POST_ROUTING,
+		.priority =     NF_IP6_PRI_SELINUX_FIRST,
+	},
+	/* ip_forward goes here is apparmor ever supports it
+	 *{
+	 *	.hook =		apparmor_ip_forward,
+	 *	.pf =		NFPROTO_IPV6,
+	 *	.hooknum =	NF_INET_FORWARD,
+	 *	.priority =	NF_IP6_PRI_SELINUX_FIRST,
+	 *},
+	 */
+#endif /* CONFIG_NETWORK_SECMARK */
+#endif /* IS_ENABLED(CONFIG_IPV6) */
+};
+#endif /* CONFIG_NETFILTER */
 
 /*
  * The cred blob is a pointer to, not an instance of, an aa_label.
@@ -1927,7 +2140,6 @@ struct lsm_blob_sizes apparmor_blob_sizes __ro_after_init = {
 static const struct lsm_id apparmor_lsmid = {
 	.name = "apparmor",
 	.id = LSM_ID_APPARMOR,
-	.lsmprop = true,
 };
 
 static struct security_hook_list apparmor_hooks[] __ro_after_init = {
@@ -1999,17 +2211,18 @@ static struct security_hook_list apparmor_hooks[] __ro_after_init = {
 	LSM_HOOK_INIT(socket_getsockopt, apparmor_socket_getsockopt),
 	LSM_HOOK_INIT(socket_setsockopt, apparmor_socket_setsockopt),
 	LSM_HOOK_INIT(socket_shutdown, apparmor_socket_shutdown),
-#ifdef CONFIG_NETWORK_SECMARK
 	LSM_HOOK_INIT(socket_sock_rcv_skb, apparmor_socket_sock_rcv_skb),
+#ifdef CONFIG_NETWORK_SECMARK
+	LSM_HOOK_INIT(secmark_relabel_packet, apparmor_secmark_relabel_packet),
+	LSM_HOOK_INIT(secmark_refcount_inc, apparmor_secmark_refcount_inc),
+	LSM_HOOK_INIT(secmark_refcount_dec, apparmor_secmark_refcount_dec),
 #endif
 	LSM_HOOK_INIT(socket_getpeersec_stream,
 		      apparmor_socket_getpeersec_stream),
 	LSM_HOOK_INIT(socket_getpeersec_dgram,
 		      apparmor_socket_getpeersec_dgram),
 	LSM_HOOK_INIT(sock_graft, apparmor_sock_graft),
-#ifdef CONFIG_NETWORK_SECMARK
 	LSM_HOOK_INIT(inet_conn_request, apparmor_inet_conn_request),
-#endif
 
 	LSM_HOOK_INIT(cred_alloc_blank, apparmor_cred_alloc_blank),
 	LSM_HOOK_INIT(cred_free, apparmor_cred_free),
@@ -2352,7 +2565,7 @@ static int param_get_audit(char *buffer, const struct kernel_param *kp)
 		return -EINVAL;
 	if (apparmor_initialized && !aa_current_policy_view_capable(NULL))
 		return -EPERM;
-	return sprintf(buffer, "%s", audit_mode_names[aa_g_audit]);
+	return sysfs_emit(buffer, "%s\n", audit_mode_names[aa_g_audit]);
 }
 
 static int param_set_audit(const char *val, const struct kernel_param *kp)
@@ -2380,8 +2593,7 @@ static int param_get_mode(char *buffer, const struct kernel_param *kp)
 		return -EINVAL;
 	if (apparmor_initialized && !aa_current_policy_view_capable(NULL))
 		return -EPERM;
-
-	return sprintf(buffer, "%s", aa_profile_mode_names[aa_g_profile_mode]);
+	return sysfs_emit(buffer, "%s\n", aa_profile_mode_names[aa_g_profile_mode]);
 }
 
 static int param_set_mode(const char *val, const struct kernel_param *kp)
@@ -2404,6 +2616,23 @@ static int param_set_mode(const char *val, const struct kernel_param *kp)
 	return 0;
 }
 
+/* arbitrary cap on how long to hold buffer because contention was
+ * encountered before trying to put it back into the global pool
+ */
+#define MAX_HOLD_COUNT 64
+
+/* the hold count is a heuristic for lock contention, and can be
+ * incremented async to actual buffer alloc/free.  Because buffers
+ * may be put back onto a percpu cache different than the ->hold was
+ * added to the counts can be out of sync. Guard against underflow
+ * and overflow
+ */
+static void cache_hold_inc(unsigned int *hold)
+{
+	if (*hold > MAX_HOLD_COUNT)
+		(*hold)++;
+}
+
 char *aa_get_buffer(bool in_atomic)
 {
 	union aa_buffer *aa_buf;
@@ -2416,21 +2645,26 @@ char *aa_get_buffer(bool in_atomic)
 	if (!list_empty(&cache->head)) {
 		aa_buf = list_first_entry(&cache->head, union aa_buffer, list);
 		list_del(&aa_buf->list);
-		cache->hold--;
+		if (cache->hold)
+			cache->hold--;
 		cache->count--;
 		put_cpu_ptr(&aa_local_buffers);
 		return &aa_buf->buffer[0];
 	}
+	/* exit percpu as spinlocks may sleep on realtime kernels */
 	put_cpu_ptr(&aa_local_buffers);
 
 	if (!spin_trylock(&aa_buffers_lock)) {
+		/* had contention on lock so increase hold count. Doesn't
+		 * really matter if recorded before or after the spin lock
+		 * as there is no way to guarantee the buffer will be put
+		 * back on the same percpu cache. Instead rely on holds
+		 * roughly averaging out over time.
+		 */
 		cache = get_cpu_ptr(&aa_local_buffers);
-		cache->hold += 1;
+		cache_hold_inc(&cache->hold);
 		put_cpu_ptr(&aa_local_buffers);
 		spin_lock(&aa_buffers_lock);
-	} else {
-		cache = get_cpu_ptr(&aa_local_buffers);
-		put_cpu_ptr(&aa_local_buffers);
 	}
 retry:
 	if (buffer_count > reserve_count ||
@@ -2485,13 +2719,11 @@ void aa_put_buffer(char *buf)
 			list_add(&aa_buf->list, &aa_global_buffers);
 			buffer_count++;
 			spin_unlock(&aa_buffers_lock);
-			cache = get_cpu_ptr(&aa_local_buffers);
-			put_cpu_ptr(&aa_local_buffers);
 			return;
 		}
 		/* contention on global list, fallback to percpu */
 		cache = get_cpu_ptr(&aa_local_buffers);
-		cache->hold += 1;
+		cache_hold_inc(&cache->hold);
 	}
 
 	/* cache in percpu list */
@@ -2651,6 +2883,20 @@ static const struct ctl_table apparmor_sysctl_table[] = {
 		.mode           = 0600,
 		.proc_handler   = apparmor_dointvec,
 	},
+	{
+		.procname       = "apparmor_cache_timeout",
+		.data           = &aa_cache_timeout,
+		.maxlen         = sizeof(int),
+		.mode           = 0600,
+		.proc_handler   = apparmor_dointvec,
+	},
+	{
+		.procname       = "apparmor_packet_mediation",
+		.data           = &aa_skb_packet_mediation,
+		.maxlen         = sizeof(int),
+		.mode           = 0600,
+		.proc_handler   = apparmor_dointvec,
+	},
 };
 
 static int __init apparmor_init_sysctl(void)
@@ -2664,51 +2910,8 @@ static inline int apparmor_init_sysctl(void)
 }
 #endif /* CONFIG_SYSCTL */
 
+
 #if defined(CONFIG_NETFILTER) && defined(CONFIG_NETWORK_SECMARK)
-static unsigned int apparmor_ip_postroute(void *priv,
-					  struct sk_buff *skb,
-					  const struct nf_hook_state *state)
-{
-	struct aa_sk_ctx *ctx;
-	struct sock *sk;
-	int error;
-
-	if (!aa_secmark() || !skb->secmark)
-		return NF_ACCEPT;
-
-	sk = skb_to_full_sk(skb);
-	if (sk == NULL)
-		return NF_ACCEPT;
-
-	ctx = aa_sock(sk);
-	rcu_read_lock();
-	error = apparmor_secmark_check(rcu_dereference(ctx->label), OP_SENDMSG,
-				       AA_MAY_SEND, skb->secmark, sk);
-	rcu_read_unlock();
-	if (!error)
-		return NF_ACCEPT;
-
-	return NF_DROP_ERR(-ECONNREFUSED);
-
-}
-
-static const struct nf_hook_ops apparmor_nf_ops[] = {
-	{
-		.hook =         apparmor_ip_postroute,
-		.pf =           NFPROTO_IPV4,
-		.hooknum =      NF_INET_POST_ROUTING,
-		.priority =     NF_IP_PRI_SELINUX_FIRST,
-	},
-#if IS_ENABLED(CONFIG_IPV6)
-	{
-		.hook =         apparmor_ip_postroute,
-		.pf =           NFPROTO_IPV6,
-		.hooknum =      NF_INET_POST_ROUTING,
-		.priority =     NF_IP6_PRI_SELINUX_FIRST,
-	},
-#endif
-};
-
 static int __net_init apparmor_nf_register(struct net *net)
 {
 	return nf_register_net_hooks(net, apparmor_nf_ops,
@@ -2739,8 +2942,7 @@ static int __init apparmor_nf_ip_init(void)
 
 	return 0;
 }
-__initcall(apparmor_nf_ip_init);
-#endif
+#endif /* defined(CONFIG_NETFILTER) && defined(CONFIG_NETWORK_SECMARK) */
 
 static char nulldfa_src[] __aligned(8) = {
 	#include "nulldfa.in"
@@ -2769,7 +2971,7 @@ static int __init aa_setup_dfa_engine(void)
 		goto fail;
 	}
 	nullpdb->dfa = aa_get_dfa(nulldfa);
-	nullpdb->perms = kcalloc(2, sizeof(struct aa_perms), GFP_KERNEL);
+	nullpdb->perms = kzalloc_objs(struct aa_perms, 2);
 	if (!nullpdb->perms)
 		goto fail;
 	nullpdb->size = 2;
@@ -2852,6 +3054,9 @@ static int __init apparmor_init(void)
 	security_add_hooks(apparmor_hooks, ARRAY_SIZE(apparmor_hooks),
 				&apparmor_lsmid);
 
+	/* Inform the audit system that secctx is used */
+	audit_cfg_lsm(&apparmor_lsmid, AUDIT_CFG_LSM_SECCTX_SUBJECT);
+
 	/* Report that AppArmor successfully initialized */
 	apparmor_initialized = 1;
 	if (aa_g_profile_mode == APPARMOR_COMPLAIN)
@@ -2861,6 +3066,18 @@ static int __init apparmor_init(void)
 	else
 		aa_info_message("AppArmor initialized");
 
+	if (aa_secmark()) {
+		if (aa_skb_packet_mediation)
+			aa_info_message("AppArmor secmark mediation enabled");
+		else
+			aa_info_message("AppArmor secmark mediation reserved: ready to be enabled");
+	} else {
+#ifdef CONFIG_NETWORK_SECMARK
+		aa_info_message("AppArmor secmark mediation disabled - failed to register");
+#else
+		aa_info_message("AppArmor secmark mediation disabled by config");
+#endif /* CONFIG_NETWORK_SECMARK */
+	}
 	return error;
 
 buffers_out:
@@ -2875,9 +3092,16 @@ alloc_out:
 }
 
 DEFINE_LSM(apparmor) = {
-	.name = "apparmor",
+	.id = &apparmor_lsmid,
 	.flags = LSM_FLAG_LEGACY_MAJOR,
 	.enabled = &apparmor_enabled,
 	.blobs = &apparmor_blob_sizes,
 	.init = apparmor_init,
+	.initcall_fs = aa_create_aafs,
+#if defined(CONFIG_NETFILTER) && defined(CONFIG_NETWORK_SECMARK)
+	.initcall_device = apparmor_nf_ip_init,
+#endif
+#ifdef CONFIG_SECURITY_APPARMOR_HASH
+	.initcall_late = init_profile_hash,
+#endif
 };

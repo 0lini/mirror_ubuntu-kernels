@@ -9,6 +9,7 @@
 #include <linux/types.h>
 
 #include "isp-cmd.h"
+#include "isp-fw.h"
 #include "isp-iommu.h"
 #include "isp-ipc.h"
 #include "isp-regs.h"
@@ -408,7 +409,11 @@ static int isp_firmware_boot_stage2(struct apple_isp *isp)
 	memcpy(args_virt, &args, sizeof(args));
 
 	isp_gpio_write32(isp, ISP_GPIO_0, args_iova);
-	isp_gpio_write32(isp, ISP_GPIO_1, args_iova >> 32);
+	/* TODO: handle this via Kconfig depends? hardware is only present on
+	 *       64-bit SoCs.
+	 */
+	if (IS_ENABLED(CONFIG_ARCH_DMA_ADDR_T_64BIT))
+		isp_gpio_write32(isp, ISP_GPIO_1, args_iova >> 32);
 	dma_wmb();
 
 	/* Wait for ISP_GPIO_7 to 0xf7fbdff9 -> 0x8042006 */
@@ -515,9 +520,9 @@ static int isp_fill_channel_info(struct apple_isp *isp)
 			goto out;
 		}
 
-		isp_dbg(isp, "chan: %s type: %d src: %d num: %d iova: 0x%llx\n",
+		isp_dbg(isp, "chan: %s type: %d src: %d num: %d iova: %pad\n",
 			chan->name, chan->type, chan->src, chan->num,
-			chan->iova);
+			&chan->iova);
 	}
 
 	isp->chan_tm = isp_get_chan_index(isp, "TERMINAL");
@@ -692,8 +697,8 @@ static void isp_collect_gc_surface(struct apple_isp *isp)
 	isp->bt_surf = NULL;
 
 	list_for_each_entry_safe_reverse(surf, tmp, &isp->gc, head) {
-		isp_dbg(isp, "freeing iova: 0x%llx size: 0x%llx virt: %pS\n",
-			surf->iova, surf->size, (void *)surf->virt);
+		isp_dbg(isp, "freeing iova: %pad size: 0x%llx virt: %pS\n",
+			&surf->iova, surf->size, (void *)surf->virt);
 		isp_free_surface(isp, surf);
 	}
 }

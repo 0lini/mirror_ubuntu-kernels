@@ -183,12 +183,12 @@ static void fqdir_work_fn(struct work_struct *work)
 	rhashtable_free_and_destroy(&fqdir->rhashtable, inet_frags_free_cb, NULL);
 
 	if (llist_add(&fqdir->free_list, &fqdir_free_list))
-		queue_delayed_work(system_wq, &fqdir_free_work, HZ);
+		queue_delayed_work(system_percpu_wq, &fqdir_free_work, HZ);
 }
 
 int fqdir_init(struct fqdir **fqdirp, struct inet_frags *f, struct net *net)
 {
-	struct fqdir *fqdir = kzalloc(sizeof(*fqdir), GFP_KERNEL);
+	struct fqdir *fqdir = kzalloc_obj(*fqdir);
 	int res;
 
 	if (!fqdir)
@@ -328,6 +328,9 @@ void inet_frag_queue_flush(struct inet_frag_queue *q,
 	reason = reason ?: SKB_DROP_REASON_FRAG_REASM_TIMEOUT;
 	sum = inet_frag_rbtree_purge(&q->rb_fragments, reason);
 	sub_frag_mem_limit(q->fqdir, sum);
+	q->rb_fragments = RB_ROOT;
+	q->fragments_tail = NULL;
+	q->last_run_head = NULL;
 }
 EXPORT_SYMBOL(inet_frag_queue_flush);
 
@@ -488,6 +491,8 @@ int inet_frag_queue_insert(struct inet_frag_queue *q, struct sk_buff *skb,
 	}
 
 	FRAG_CB(skb)->ip_defrag_offset = offset;
+	if (offset)
+		nf_reset_ct(skb);
 
 	return IPFRAG_OK;
 }

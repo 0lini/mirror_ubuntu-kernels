@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only OR MIT
-/* "Copyright" 2021 Alyssa Rosenzweig <alyssa@rosenzweig.io> */
+/* "Copyright" 2021 Alyssa Rosenzweig */
 
 #ifndef __APPLE_CONNECTOR_H__
 #define __APPLE_CONNECTOR_H__

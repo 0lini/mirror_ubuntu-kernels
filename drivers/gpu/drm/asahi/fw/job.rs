@@ -3,7 +3,11 @@
 //! Common GPU job firmware structures
 
 use super::types::*;
-use crate::{default_zeroed, mmu, trivial_gpustruct};
+use crate::{
+    default_zeroed,
+    mmu,
+    trivial_gpustruct, //
+};
 use kernel::prelude::Result;
 use kernel::sync::Arc;
 

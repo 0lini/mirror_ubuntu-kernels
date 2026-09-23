@@ -405,9 +405,10 @@ static int vpe_sw_init(struct amdgpu_ip_block *ip_block)
 	if (ret)
 		goto out;
 
-	/* TODO: Add queue reset mask when FW fully supports it */
 	adev->vpe.supported_reset =
 		 amdgpu_get_soft_full_reset_mask(&adev->vpe.ring);
+	if (!amdgpu_sriov_vf(adev))
+		adev->vpe.supported_reset |= AMDGPU_RESET_TYPE_PER_QUEUE;
 	ret = amdgpu_vpe_sysfs_reset_mask_init(adev);
 	if (ret)
 		goto out;
@@ -561,6 +562,11 @@ static void vpe_ring_emit_fence(struct amdgpu_ring *ring, uint64_t addr,
 		amdgpu_ring_write(ring, 0);
 	}
 
+	/* WA: Force sync after TRAP to avoid VPE1 fail to power off */
+	if (ring->adev->vpe.collaborate_mode) {
+		amdgpu_ring_write(ring, VPE_CMD_HEADER(VPE_CMD_OPCODE_COLLAB_SYNC, 0));
+		amdgpu_ring_write(ring, 0xabcd);
+	}
 }
 
 static void vpe_ring_emit_pipeline_sync(struct amdgpu_ring *ring)
@@ -789,7 +795,7 @@ static int vpe_ring_test_ring(struct amdgpu_ring *ring)
 
 	ret = amdgpu_ring_alloc(ring, 4);
 	if (ret) {
-		dev_err(adev->dev, "amdgpu: dma failed to lock ring %d (%d).\n", ring->idx, ret);
+		dev_err(adev->dev, "dma failed to lock ring %d (%d).\n", ring->idx, ret);
 		goto out;
 	}
 
@@ -898,6 +904,27 @@ static void vpe_ring_end_use(struct amdgpu_ring *ring)
 	schedule_delayed_work(&adev->vpe.idle_work, VPE_IDLE_TIMEOUT);
 }
 
+static int vpe_ring_reset(struct amdgpu_ring *ring,
+			  unsigned int vmid,
+			  struct amdgpu_fence *timedout_fence)
+{
+	struct amdgpu_device *adev = ring->adev;
+	int r;
+
+	amdgpu_ring_reset_helper_begin(ring, timedout_fence);
+
+	r = amdgpu_device_ip_set_powergating_state(adev, AMD_IP_BLOCK_TYPE_VPE,
+						   AMD_PG_STATE_GATE);
+	if (r)
+		return r;
+	r = amdgpu_device_ip_set_powergating_state(adev, AMD_IP_BLOCK_TYPE_VPE,
+						   AMD_PG_STATE_UNGATE);
+	if (r)
+		return r;
+
+	return amdgpu_ring_reset_helper_end(ring, timedout_fence);
+}
+
 static ssize_t amdgpu_get_vpe_reset_mask(struct device *dev,
 						struct device_attribute *attr,
 						char *buf)
@@ -946,7 +973,7 @@ static const struct amdgpu_ring_funcs vpe_ring_funcs = {
 	.emit_frame_size =
 		5 + /* vpe_ring_init_cond_exec */
 		6 + /* vpe_ring_emit_pipeline_sync */
-		10 + 10 + 10 + /* vpe_ring_emit_fence */
+		12 + 12 + 12 + /* vpe_ring_emit_fence */
 		/* vpe_ring_emit_vm_flush */
 		SOC15_FLUSH_GPU_TLB_NUM_WREG * 3 +
 		SOC15_FLUSH_GPU_TLB_NUM_REG_WAIT * 6,
@@ -966,6 +993,7 @@ static const struct amdgpu_ring_funcs vpe_ring_funcs = {
 	.preempt_ib = vpe_ring_preempt_ib,
 	.begin_use = vpe_ring_begin_use,
 	.end_use = vpe_ring_end_use,
+	.reset = vpe_ring_reset,
 };
 
 static void vpe_set_ring_funcs(struct amdgpu_device *adev)

@@ -16,12 +16,23 @@
 //! previous slot without doing an LRU scan.
 
 use core::num::NonZeroUsize;
-use core::ops::{Deref, DerefMut};
+use core::ops::{
+    Deref,
+    DerefMut, //
+};
 use kernel::{
-    error::{code::*, Result},
+    error::{
+        code::*,
+        Result, //
+    },
     prelude::*,
     str::CStr,
-    sync::{Arc, CondVar, LockClassKey, Mutex},
+    sync::{
+        Arc,
+        CondVar,
+        LockClassKey,
+        Mutex, //
+    },
 };
 
 /// Trait representing a single item within a slot.

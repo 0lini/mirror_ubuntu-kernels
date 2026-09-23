@@ -74,7 +74,7 @@
 };
 
 &gpu {
-	compatible = "apple,agx-t6021", "apple,agx-g14x";
+	compatible = "apple,agx-t6021", "apple,agx-g14x", "apple,agx-g14c", "apple,agx-g14s";
 
 	apple,avg-power-filter-tc-ms = <300>;
 	apple,avg-power-ki-only = <1.5125>;

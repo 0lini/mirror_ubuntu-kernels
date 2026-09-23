@@ -3,15 +3,15 @@
  * Copyright (C) 2025 Advanced Micro Devices, Inc.
  */
 
-#ifndef _ISP4_CONTEXT_H_
-#define _ISP4_CONTEXT_H_
+#ifndef _ISP4_SUBDEV_H_
+#define _ISP4_SUBDEV_H_
 
+#include <linux/debugfs.h>
 #include <linux/delay.h>
 #include <linux/firmware.h>
-#include <linux/platform_device.h>
-#include <linux/uaccess.h>
+#include <linux/pm_runtime.h>
 #include <linux/types.h>
-#include <linux/debugfs.h>
+#include <linux/uaccess.h>
 #include <media/v4l2-device.h>
 
 #include "isp4_fw_cmd_resp.h"
@@ -20,23 +20,12 @@
 #include "isp4_video.h"
 
 /*
- * one is for none sesnor specefic response which is not used now
- * another is for sensor specific response
+ * One is for none sensor specific response which is not used now.
+ * Another is for sensor specific response
  */
 #define ISP4SD_MAX_FW_RESP_STREAM_NUM 2
 
-/*
- * cmd used to register frame done callback, parameter is
- * struct isp4sd_register_framedone_cb_param *
- * when a image buffer is filled by ISP, ISP will call the registered callback.
- * callback func prototype is isp4sd_framedone_cb, cb_ctx can be anything
- * provided by caller which will be provided back as the first parameter of the
- * callback function.
- * both cb_func and cb_ctx are provide by caller, set cb_func to NULL to
- * unregister the callback
- */
-
-/* used to indicate the ISP status */
+/* Indicates the ISP status */
 enum isp4sd_status {
 	ISP4SD_STATUS_PWR_OFF,
 	ISP4SD_STATUS_PWR_ON,
@@ -44,9 +33,9 @@ enum isp4sd_status {
 	ISP4SD_STATUS_MAX
 };
 
-/* used to indicate the status of sensor, output stream */
+/* Indicates sensor and output stream status */
 enum isp4sd_start_status {
-	ISP4SD_START_STATUS_NOT_START,
+	ISP4SD_START_STATUS_OFF,
 	ISP4SD_START_STATUS_STARTED,
 	ISP4SD_START_STATUS_START_FAIL,
 };
@@ -56,23 +45,21 @@ struct isp4sd_img_buf_node {
 	struct isp4if_img_buf_info buf_info;
 };
 
-/* this is isp output after processing bayer raw input from sensor */
+/* This is ISP output after processing Bayer raw sensor input */
 struct isp4sd_output_info {
 	enum isp4sd_start_status start_status;
 	u32 image_size;
 };
 
 /*
- * This struct represents the sensor info which is input or source of ISP,
- * meta_info_buf is the buffer store the fw to driver metainfo response
- * status is the sensor status
- * output_info is the isp output info after ISP processing the sensor input,
- * start_stream_cmd_sent mean if CMD_ID_START_STREAM has sent to fw.
- * buf_sent_cnt is buffer count app has sent to receive the images
+ * Struct for sensor info used as ISP input or source.
+ * status: sensor status.
+ * output_info: ISP output after processing the sensor input.
+ * start_stream_cmd_sent: indicates if ISP4FW_CMD_ID_START_STREAM was sent
+ * to firmware.
+ * buf_sent_cnt: number of buffers sent to receive images.
  */
 struct isp4sd_sensor_info {
-	struct isp4if_gpu_mem_info *
-		meta_info_buf[ISP4IF_MAX_STREAM_BUF_COUNT];
 	struct isp4sd_output_info output_info;
 	enum isp4sd_start_status status;
 	bool start_stream_cmd_sent;
@@ -80,14 +67,13 @@ struct isp4sd_sensor_info {
 };
 
 /*
- * Thread created by driver to receive fw response
- * thread will be wakeup by fw to driver response interrupt
+ * The thread is created by the driver to handle firmware responses which will
+ * be waken up when a firmware-to-driver response interrupt occurs.
  */
 struct isp4sd_thread_handler {
 	struct task_struct *thread;
-	struct mutex mutex; /* mutex */
 	wait_queue_head_t waitq;
-	int wq_cond;
+	bool resp_ready;
 };
 
 struct isp4_subdev_thread_param {
@@ -103,9 +89,9 @@ struct isp4_subdev {
 	struct media_pad sdev_pad;
 
 	enum isp4sd_status isp_status;
-	struct mutex ops_mutex; /* ops_mutex */
+	/* mutex used to synchronize the operation with firmware */
+	struct mutex ops_mutex;
 
-	/* Used to store fw cmds sent to FW whose response driver needs to wait for */
 	struct isp4sd_thread_handler
 		fw_resp_thread[ISP4SD_MAX_FW_RESP_STREAM_NUM];
 
@@ -119,15 +105,23 @@ struct isp4_subdev {
 	void __iomem *mmio;
 	struct isp4_subdev_thread_param
 		isp_resp_para[ISP4SD_MAX_FW_RESP_STREAM_NUM];
+	int irq[ISP4SD_MAX_FW_RESP_STREAM_NUM];
+	bool irq_enabled;
+	/* spin lock to access ISP_SYS_INT0_EN exclusively */
+	spinlock_t irq_lock;
 #ifdef CONFIG_DEBUG_FS
-	struct dentry *debugfs_dir;
 	bool enable_fw_log;
+	struct dentry *debugfs_dir;
 	char *fw_log_output;
 #endif
 };
 
-int isp4sd_init(struct isp4_subdev *isp_subdev,
-		struct v4l2_device *v4l2_dev);
+int isp4sd_init(struct isp4_subdev *isp_subdev, struct v4l2_device *v4l2_dev,
+		int irq[ISP4SD_MAX_FW_RESP_STREAM_NUM]);
 void isp4sd_deinit(struct isp4_subdev *isp_subdev);
+int isp4sd_ioc_send_img_buf(struct v4l2_subdev *sd,
+			    struct isp4if_img_buf_info *buf_info);
+int isp4sd_pwron_and_init(struct v4l2_subdev *sd);
+int isp4sd_pwroff_and_deinit(struct v4l2_subdev *sd);
 
-#endif
+#endif /* _ISP4_SUBDEV_H_ */

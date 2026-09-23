@@ -7,20 +7,14 @@
 #define _ISP4_H_
 
 #include <drm/amd/isp.h>
-#include <linux/mutex.h>
 #include "isp4_subdev.h"
-
-#define ISP4_GET_ISP_REG_BASE(isp4sd) (((isp4sd))->mmio)
 
 struct isp4_device {
 	struct v4l2_device v4l2_dev;
-	struct isp4_subdev isp_sdev;
+	struct isp4_subdev isp_subdev;
 	struct media_device mdev;
-
-	struct isp_platform_data *pltf_data;
-	struct platform_device *pdev;
-	struct notifier_block i2c_nb;
-	struct v4l2_async_notifier notifier;
 };
+
+void isp4_intr_enable(struct isp4_subdev *isp_subdev, u32 index, bool enable);
 
 #endif /* _ISP4_H_ */

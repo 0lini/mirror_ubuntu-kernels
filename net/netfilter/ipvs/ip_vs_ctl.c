@@ -13,8 +13,7 @@
  * Changes:
  */
 
-#define KMSG_COMPONENT "IPVS"
-#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
+#define pr_fmt(fmt) "IPVS: " fmt
 
 #include <linux/module.h>
 #include <linux/init.h>
@@ -939,7 +938,7 @@ int ip_vs_stats_init_alloc(struct ip_vs_stats *s)
 
 struct ip_vs_stats *ip_vs_stats_alloc(void)
 {
-	struct ip_vs_stats *s = kzalloc(sizeof(*s), GFP_KERNEL);
+	struct ip_vs_stats *s = kzalloc_obj(*s);
 
 	if (s && ip_vs_stats_init_alloc(s) >= 0)
 		return s;
@@ -1080,7 +1079,7 @@ ip_vs_new_dest(struct ip_vs_service *svc, struct ip_vs_dest_user_kern *udest)
 			return -EINVAL;
 	}
 
-	dest = kzalloc(sizeof(struct ip_vs_dest), GFP_KERNEL);
+	dest = kzalloc_obj(struct ip_vs_dest);
 	if (dest == NULL)
 		return -ENOMEM;
 
@@ -1422,7 +1421,7 @@ ip_vs_add_service(struct netns_ipvs *ipvs, struct ip_vs_service_user_kern *u,
 		ret_hooks = ret;
 	}
 
-	svc = kzalloc(sizeof(struct ip_vs_service), GFP_KERNEL);
+	svc = kzalloc_obj(struct ip_vs_service);
 	if (svc == NULL) {
 		IP_VS_DBG(1, "%s(): no memory\n", __func__);
 		ret = -ENOMEM;
@@ -1453,7 +1452,6 @@ ip_vs_add_service(struct netns_ipvs *ipvs, struct ip_vs_service_user_kern *u,
 		ret = ip_vs_bind_scheduler(svc, sched);
 		if (ret)
 			goto out_err;
-		sched = NULL;
 	}
 
 	ret = ip_vs_start_estimator(ipvs, &svc->stats);
@@ -1498,7 +1496,7 @@ ip_vs_add_service(struct netns_ipvs *ipvs, struct ip_vs_service_user_kern *u,
 	if (ret_hooks >= 0)
 		ip_vs_unregister_hooks(ipvs, u->af);
 	if (svc != NULL) {
-		ip_vs_unbind_scheduler(svc, sched);
+		ip_vs_unbind_scheduler(svc);
 		ip_vs_service_free(svc);
 	}
 	ip_vs_scheduler_put(sched);
@@ -1560,9 +1558,8 @@ ip_vs_edit_service(struct ip_vs_service *svc, struct ip_vs_service_user_kern *u)
 	old_sched = rcu_dereference_protected(svc->scheduler, 1);
 	if (sched != old_sched) {
 		if (old_sched) {
-			ip_vs_unbind_scheduler(svc, old_sched);
-			RCU_INIT_POINTER(svc->scheduler, NULL);
-			/* Wait all svc->sched_data users */
+			ip_vs_unbind_scheduler(svc);
+			/* Wait all svc->scheduler/sched_data users */
 			synchronize_rcu();
 		}
 		/* Bind the new scheduler */
@@ -1570,6 +1567,10 @@ ip_vs_edit_service(struct ip_vs_service *svc, struct ip_vs_service_user_kern *u)
 			ret = ip_vs_bind_scheduler(svc, sched);
 			if (ret) {
 				ip_vs_scheduler_put(sched);
+				/* Try to restore the old_sched */
+				if (old_sched &&
+				    !ip_vs_bind_scheduler(svc, old_sched))
+					old_sched = NULL;
 				goto out;
 			}
 		}
@@ -1626,7 +1627,7 @@ static void __ip_vs_del_service(struct ip_vs_service *svc, bool cleanup)
 
 	/* Unbind scheduler */
 	old_sched = rcu_dereference_protected(svc->scheduler, 1);
-	ip_vs_unbind_scheduler(svc, old_sched);
+	ip_vs_unbind_scheduler(svc);
 	ip_vs_scheduler_put(old_sched);
 
 	/* Unbind persistence engine, keep svc->pe */
@@ -4440,7 +4441,7 @@ int __net_init ip_vs_control_net_init(struct netns_ipvs *ipvs)
 	INIT_DELAYED_WORK(&ipvs->est_reload_work, est_reload_work_handler);
 
 	/* procfs stats */
-	ipvs->tot_stats = kzalloc(sizeof(*ipvs->tot_stats), GFP_KERNEL);
+	ipvs->tot_stats = kzalloc_obj(*ipvs->tot_stats);
 	if (!ipvs->tot_stats)
 		goto out;
 	if (ip_vs_stats_init_alloc(&ipvs->tot_stats->s) < 0)

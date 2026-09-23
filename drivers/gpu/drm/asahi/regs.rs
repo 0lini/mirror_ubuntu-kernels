@@ -9,7 +9,13 @@
 
 use crate::hw;
 use kernel::{
-    c_str, device::Core, devres::Devres, io::mem::IoMem, platform, prelude::*, types::ARef,
+    c_str,
+    device::Core,
+    devres::Devres,
+    io::mem::IoMem,
+    platform,
+    prelude::*,
+    types::ARef, //
 };
 
 /// Size of the ASC control MMIO region.

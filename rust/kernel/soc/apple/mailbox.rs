@@ -5,10 +5,18 @@
 //! C header: [`include/linux/soc/apple/mailbox.h`](../../../../include/linux/gpio/driver.h)
 
 use crate::{
-    bindings, device,
-    error::{from_err_ptr, to_result, Result},
-    str::CStr,
-    types::{ForeignOwnable, ScopeGuard},
+    bindings,
+    device,
+    error::{
+        from_err_ptr,
+        to_result, //
+    },
+    prelude::*,
+    str::CStrExt,
+    types::{
+        ForeignOwnable,
+        ScopeGuard, //
+    }, //
 };
 
 use core::marker::PhantomData;

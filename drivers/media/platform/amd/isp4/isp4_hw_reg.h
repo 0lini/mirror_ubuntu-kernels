@@ -7,7 +7,6 @@
 #define _ISP4_HW_REG_H_
 
 #include <linux/io.h>
-#include <linux/types.h>
 
 #define ISP_SOFT_RESET			0x62000
 #define ISP_SYS_INT0_EN			0x62010
@@ -122,4 +121,4 @@ static inline void isp4hw_wreg(void __iomem *base, u32 reg, u32 val)
 	return writel(val, base + reg);
 }
 
-#endif
+#endif /* _ISP4_HW_REG_H_ */

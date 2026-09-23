@@ -427,8 +427,6 @@ static const struct vb2_ops isp_vb2_ops = {
 	.buf_queue = isp_vb2_buf_queue,
 	.start_streaming = isp_vb2_start_streaming,
 	.stop_streaming = isp_vb2_stop_streaming,
-	.wait_prepare = vb2_ops_wait_prepare,
-	.wait_finish = vb2_ops_wait_finish,
 };
 
 static int isp_set_preset(struct apple_isp *isp, struct isp_format *fmt,

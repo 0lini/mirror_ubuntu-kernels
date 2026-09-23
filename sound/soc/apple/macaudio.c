@@ -489,6 +489,11 @@ static int macaudio_parse_of(struct macaudio_snd_data *ma)
 		dev_err_probe(dev, ret, "parsing card name\n");
 		return ret;
 	}
+	/*
+	 * Set long_name to prevent snd_soc_set_dmi_name() from setting one from
+	 * make believe data u-boot provides in its SMBIOS emulation.
+	 */
+	card->long_name = card->name;
 
 	/* Populate links, start with the fixed number of FE links */
 	num_links = ARRAY_SIZE(macaudio_fe_links);
@@ -1041,6 +1046,7 @@ static int macaudio_add_backend_dai_route(struct snd_soc_card *card, struct snd_
 					  bool is_speakers)
 {
 	struct snd_soc_dapm_route routes[2];
+	struct snd_soc_dapm_context *dapm = snd_soc_card_to_dapm(card);
 	struct snd_soc_dapm_route *r;
 	int nroutes = 0;
 	int ret;
@@ -1070,7 +1076,7 @@ static int macaudio_add_backend_dai_route(struct snd_soc_card *card, struct snd_
 		r->sink = "Speaker Sense Capture";
 	}
 
-	ret = snd_soc_dapm_add_routes(&card->dapm, routes, nroutes);
+	ret = snd_soc_dapm_add_routes(dapm, routes, nroutes);
 	if (ret)
 		dev_err(card->dev, "failed adding dynamic DAPM routes for %s\n",
 			dai->name);
@@ -1081,6 +1087,7 @@ static int macaudio_add_pin_routes(struct snd_soc_card *card, struct snd_soc_com
 				   bool is_speakers)
 {
 	struct snd_soc_dapm_route routes[2];
+	struct snd_soc_dapm_context *dapm = snd_soc_card_to_dapm(card);
 	struct snd_soc_dapm_route *r;
 	int nroutes = 0;
 	char buf[32];
@@ -1106,7 +1113,7 @@ static int macaudio_add_pin_routes(struct snd_soc_card *card, struct snd_soc_com
 		r->sink = "Jack HS";
 	}
 
-	ret = snd_soc_dapm_add_routes(&card->dapm, routes, nroutes);
+	ret = snd_soc_dapm_add_routes(dapm, routes, nroutes);
 	if (ret)
 		dev_err(card->dev, "failed adding dynamic DAPM routes for %s\n",
 			component->name);

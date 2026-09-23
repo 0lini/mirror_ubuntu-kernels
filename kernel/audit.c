@@ -32,6 +32,7 @@
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/file.h>
+#include <linux/hex.h>
 #include <linux/init.h>
 #include <linux/types.h>
 #include <linux/atomic.h>
@@ -58,6 +59,9 @@
 #include <linux/freezer.h>
 #include <linux/pid_namespace.h>
 #include <net/netns/generic.h>
+#include <net/ip.h>
+#include <net/ipv6.h>
+#include <linux/sctp.h>
 
 #include "audit.h"
 
@@ -81,6 +85,13 @@ static u32	audit_failure = AUDIT_FAIL_PRINTK;
 
 /* private audit network namespace index */
 static unsigned int audit_net_id;
+
+/* Number of modules that provide a security context.
+   List of lsms that provide a security context */
+static u32 audit_subj_secctx_cnt;
+static u32 audit_obj_secctx_cnt;
+static const struct lsm_id *audit_subj_lsms[MAX_LSM_COUNT];
+static const struct lsm_id *audit_obj_lsms[MAX_LSM_COUNT];
 
 /**
  * struct audit_net - audit private network namespace data
@@ -279,6 +290,33 @@ static pid_t auditd_pid_vnr(void)
 	rcu_read_unlock();
 
 	return pid;
+}
+
+/**
+ * audit_cfg_lsm - Identify a security module as providing a secctx.
+ * @lsmid: LSM identity
+ * @flags: which contexts are provided
+ *
+ * Description:
+ * Increments the count of the security modules providing a secctx.
+ * If the LSM id is already in the list leave it alone.
+ */
+void audit_cfg_lsm(const struct lsm_id *lsmid, int flags)
+{
+	int i;
+
+	if (flags & AUDIT_CFG_LSM_SECCTX_SUBJECT) {
+		for (i = 0 ; i < audit_subj_secctx_cnt; i++)
+			if (audit_subj_lsms[i] == lsmid)
+				return;
+		audit_subj_lsms[audit_subj_secctx_cnt++] = lsmid;
+	}
+	if (flags & AUDIT_CFG_LSM_SECCTX_OBJECT) {
+		for (i = 0 ; i < audit_obj_secctx_cnt; i++)
+			if (audit_obj_lsms[i] == lsmid)
+				return;
+		audit_obj_lsms[audit_obj_secctx_cnt++] = lsmid;
+	}
 }
 
 /**
@@ -507,7 +545,7 @@ static int auditd_set(struct pid *pid, u32 portid, struct net *net,
 	if (!pid || !net)
 		return -EINVAL;
 
-	ac_new = kzalloc(sizeof(*ac_new), GFP_KERNEL);
+	ac_new = kzalloc_obj(*ac_new);
 	if (!ac_new)
 		return -ENOMEM;
 	ac_new->pid = get_pid(pid);
@@ -1006,7 +1044,7 @@ static void audit_send_reply(struct sk_buff *request_skb, int seq, int type, int
 	struct task_struct *tsk;
 	struct audit_reply *reply;
 
-	reply = kzalloc(sizeof(*reply), GFP_KERNEL);
+	reply = kzalloc_obj(*reply);
 	if (!reply)
 		return;
 
@@ -1428,6 +1466,8 @@ static int audit_receive_msg(struct sk_buff *skb, struct nlmsghdr *nlh,
 		err = audit_list_rules_send(skb, seq);
 		break;
 	case AUDIT_TRIM:
+		if (audit_enabled == AUDIT_LOCKED)
+			return -EPERM;
 		audit_trim_trees();
 		audit_log_common_recv_msg(audit_context(), &ab,
 					  AUDIT_CONFIG_CHANGE);
@@ -1440,6 +1480,8 @@ static int audit_receive_msg(struct sk_buff *skb, struct nlmsghdr *nlh,
 		size_t msglen = data_len;
 		char *old, *new;
 
+		if (audit_enabled == AUDIT_LOCKED)
+			return -EPERM;
 		err = -EINVAL;
 		if (msglen < 2 * sizeof(u32))
 			break;
@@ -1479,8 +1521,7 @@ static int audit_receive_msg(struct sk_buff *skb, struct nlmsghdr *nlh,
 			if (err < 0)
 				return err;
 		}
-		sig_data = kmalloc(struct_size(sig_data, ctx, lsmctx.len),
-				   GFP_KERNEL);
+		sig_data = kmalloc_flex(*sig_data, ctx, lsmctx.len);
 		if (!sig_data) {
 			if (lsmprop_is_set(&audit_sig_lsm))
 				security_release_secctx(&lsmctx);
@@ -1797,11 +1838,12 @@ static struct audit_buffer *audit_buffer_alloc(struct audit_context *ctx,
 	if (!ab)
 		return NULL;
 
+	skb_queue_head_init(&ab->skb_list);
+
 	ab->skb = nlmsg_new(AUDIT_BUFSIZ, gfp_mask);
 	if (!ab->skb)
 		goto err;
 
-	skb_queue_head_init(&ab->skb_list);
 	skb_queue_tail(&ab->skb_list, ab->skb);
 
 	if (!nlmsg_put(ab->skb, 0, 0, type, 0, 0))
@@ -2237,17 +2279,25 @@ static void audit_buffer_aux_end(struct audit_buffer *ab)
 	ab->skb = skb_peek(&ab->skb_list);
 }
 
-int audit_log_subject_context(struct audit_buffer *ab, struct lsm_prop *prop)
+/**
+ * audit_log_subj_ctx - Add LSM subject information
+ * @ab: audit_buffer
+ * @prop: LSM subject properties.
+ *
+ * Add a subj= field and, if necessary, a AUDIT_MAC_TASK_CONTEXTS record.
+ */
+int audit_log_subj_ctx(struct audit_buffer *ab, struct lsm_prop *prop)
 {
 	struct lsm_context ctx;
-	bool space = false;
+	char *space = "";
 	int error;
 	int i;
 
+	security_current_getlsmprop_subj(prop);
 	if (!lsmprop_is_set(prop))
 		return 0;
 
-	if (lsm_prop_cnt < 2) {
+	if (audit_subj_secctx_cnt < 2) {
 		error = security_lsmprop_to_secctx(prop, &ctx, LSM_ID_UNDEF);
 		if (error < 0) {
 			if (error != -EINVAL)
@@ -2264,91 +2314,91 @@ int audit_log_subject_context(struct audit_buffer *ab, struct lsm_prop *prop)
 	if (error)
 		goto error_path;
 
-	for (i = 0; i < lsm_active_cnt; i++) {
-		if (!lsm_idlist[i]->lsmprop)
-			continue;
+	for (i = 0; i < audit_subj_secctx_cnt; i++) {
 		error = security_lsmprop_to_secctx(prop, &ctx,
-						   lsm_idlist[i]->id);
+						   audit_subj_lsms[i]->id);
 		if (error < 0) {
+			/*
+			 * Don't print anything. An LSM like BPF could
+			 * claim to support contexts, but only do so under
+			 * certain conditions.
+			 */
 			if (error == -EOPNOTSUPP)
 				continue;
-			audit_log_format(ab, "%ssubj_%s=?", space ? " " : "",
-					 lsm_idlist[i]->name);
 			if (error != -EINVAL)
-				audit_panic("error in audit_log_task_context");
+				audit_panic("error in audit_log_subj_ctx");
 		} else {
-			audit_log_format(ab, "%ssubj_%s=%s", space ? " " : "",
-					 lsm_idlist[i]->name, ctx.context);
+			audit_log_format(ab, "%ssubj_%s=%s", space,
+					 audit_subj_lsms[i]->name, ctx.context);
+			space = " ";
 			security_release_secctx(&ctx);
 		}
-		space = true;
 	}
 	audit_buffer_aux_end(ab);
 	return 0;
 
 error_path:
-	audit_panic("error in audit_log_subject_context");
+	audit_panic("error in audit_log_subj_ctx");
 	return error;
 }
-EXPORT_SYMBOL(audit_log_subject_context);
+EXPORT_SYMBOL(audit_log_subj_ctx);
 
 int audit_log_task_context(struct audit_buffer *ab)
 {
 	struct lsm_prop prop;
 
 	security_current_getlsmprop_subj(&prop);
-	return audit_log_subject_context(ab, &prop);
+	return audit_log_subj_ctx(ab, &prop);
 }
 EXPORT_SYMBOL(audit_log_task_context);
 
-void audit_log_object_context(struct audit_buffer *ab, struct lsm_prop *prop)
+int audit_log_obj_ctx(struct audit_buffer *ab, struct lsm_prop *prop)
 {
 	int i;
-	int error;
-	bool space = false;
-	struct lsm_context context;
+	int rc;
+	int error = 0;
+	char *space = "";
+	struct lsm_context ctx;
 
-	if (lsm_prop_cnt < 2) {
-		error = security_lsmprop_to_secctx(prop, &context,
-						   LSM_ID_UNDEF);
+	if (audit_obj_secctx_cnt < 2) {
+		error = security_lsmprop_to_secctx(prop, &ctx, LSM_ID_UNDEF);
 		if (error < 0) {
 			if (error != -EINVAL)
 				goto error_path;
-			return;
+			return error;
 		}
-		audit_log_format(ab, " obj=%s", context.context);
-		security_release_secctx(&context);
-		return;
+		audit_log_format(ab, " obj=%s", ctx.context);
+		security_release_secctx(&ctx);
+		return 0;
 	}
 	audit_log_format(ab, " obj=?");
 	error = audit_buffer_aux_new(ab, AUDIT_MAC_OBJ_CONTEXTS);
 	if (error)
 		goto error_path;
 
-	for (i = 0; i < lsm_prop_cnt; i++) {
-		if (!lsm_idlist[i]->lsmprop)
-			continue;
-		error = security_lsmprop_to_secctx(prop, &context,
-						   lsm_idlist[i]->id);
-		if (error < 0) {
-			audit_log_format(ab, "%sobj_%s=?",
-					 space ? " " : "", lsm_idlist[i]->name);
-			if (error != -EINVAL)
-				audit_panic("error in audit_log_object_context");
+	for (i = 0; i < audit_obj_secctx_cnt; i++) {
+		rc = security_lsmprop_to_secctx(prop, &ctx,
+						audit_obj_lsms[i]->id);
+		if (rc < 0) {
+			audit_log_format(ab, "%sobj_%s=?", space,
+					 audit_obj_lsms[i]->name);
+			if (rc != -EINVAL)
+				audit_panic("error in audit_log_obj_ctx");
+			error = rc;
 		} else {
-			audit_log_format(ab, "%sobj_%s=%s",
-					 space ? " " : "", lsm_idlist[i]->name,
-					 context.context);
-			security_release_secctx(&context);
+			audit_log_format(ab, "%sobj_%s=%s", space,
+					 audit_obj_lsms[i]->name, ctx.context);
+			security_release_secctx(&ctx);
 		}
-		space = true;
+		space = " ";
 	}
 
 	audit_buffer_aux_end(ab);
-	return;
+	return error;
 
 error_path:
-	audit_panic("error in audit_log_object_context");
+	audit_panic("error in audit_log_obj_ctx");
+	return error;
 }
 
 void audit_log_d_path_exe(struct audit_buffer *ab,
@@ -2444,6 +2494,162 @@ void audit_log_path_denied(int type, const char *operation)
 	audit_log_format(ab, " res=0");
 	audit_log_end(ab);
 }
+
+int audit_log_nf_skb(struct audit_buffer *ab,
+		     const struct sk_buff *skb, u8 nfproto)
+{
+	/* find the IP protocol in the case of NFPROTO_BRIDGE */
+	if (nfproto == NFPROTO_BRIDGE) {
+		switch (eth_hdr(skb)->h_proto) {
+		case htons(ETH_P_IP):
+			nfproto = NFPROTO_IPV4;
+			break;
+		case htons(ETH_P_IPV6):
+			nfproto = NFPROTO_IPV6;
+			break;
+		default:
+			goto unknown_proto;
+		}
+	}
+
+	switch (nfproto) {
+	case NFPROTO_IPV4: {
+		struct iphdr iph;
+		const struct iphdr *ih;
+
+		ih = skb_header_pointer(skb, skb_network_offset(skb),
+					sizeof(iph), &iph);
+		if (!ih)
+			return -ENOMEM;
+
+		switch (ih->protocol) {
+		case IPPROTO_TCP: {
+			struct tcphdr _tcph;
+			const struct tcphdr *th;
+
+			th = skb_header_pointer(skb, skb_transport_offset(skb),
+						sizeof(_tcph), &_tcph);
+			if (!th)
+				return -ENOMEM;
+
+			audit_log_format(ab, " saddr=%pI4 daddr=%pI4 proto=%hhu sport=%hu dport=%hu",
+					 &ih->saddr, &ih->daddr, ih->protocol,
+					 ntohs(th->source), ntohs(th->dest));
+			break;
+		}
+		case IPPROTO_UDP:
+		case IPPROTO_UDPLITE: {
+			struct udphdr _udph;
+			const struct udphdr *uh;
+
+			uh = skb_header_pointer(skb, skb_transport_offset(skb),
+						sizeof(_udph), &_udph);
+			if (!uh)
+				return -ENOMEM;
+
+			audit_log_format(ab, " saddr=%pI4 daddr=%pI4 proto=%hhu sport=%hu dport=%hu",
+					 &ih->saddr, &ih->daddr, ih->protocol,
+					 ntohs(uh->source), ntohs(uh->dest));
+			break;
+		}
+		case IPPROTO_SCTP: {
+			struct sctphdr _sctph;
+			const struct sctphdr *sh;
+
+			sh = skb_header_pointer(skb, skb_transport_offset(skb),
+						sizeof(_sctph), &_sctph);
+			if (!sh)
+				return -ENOMEM;
+
+			audit_log_format(ab, " saddr=%pI4 daddr=%pI4 proto=%hhu sport=%hu dport=%hu",
+					 &ih->saddr, &ih->daddr, ih->protocol,
+					 ntohs(sh->source), ntohs(sh->dest));
+			break;
+		}
+		default:
+			audit_log_format(ab, " saddr=%pI4 daddr=%pI4 proto=%hhu",
+					 &ih->saddr, &ih->daddr, ih->protocol);
+		}
+
+		break;
+	}
+	case NFPROTO_IPV6: {
+		struct ipv6hdr iph;
+		const struct ipv6hdr *ih;
+		u8 nexthdr;
+		__be16 frag_off;
+
+		ih = skb_header_pointer(skb, skb_network_offset(skb),
+					sizeof(iph), &iph);
+		if (!ih)
+			return -ENOMEM;
+
+		nexthdr = ih->nexthdr;
+		ipv6_skip_exthdr(skb, skb_network_offset(skb) + sizeof(iph),
+				 &nexthdr, &frag_off);
+
+		switch (nexthdr) {
+		case IPPROTO_TCP: {
+			struct tcphdr _tcph;
+			const struct tcphdr *th;
+
+			th = skb_header_pointer(skb, skb_transport_offset(skb),
+						sizeof(_tcph), &_tcph);
+			if (!th)
+				return -ENOMEM;
+
+			audit_log_format(ab, " saddr=%pI6c daddr=%pI6c proto=%hhu sport=%hu dport=%hu",
+					 &ih->saddr, &ih->daddr, nexthdr,
+					 ntohs(th->source), ntohs(th->dest));
+			break;
+		}
+		case IPPROTO_UDP:
+		case IPPROTO_UDPLITE: {
+			struct udphdr _udph;
+			const struct udphdr *uh;
+
+			uh = skb_header_pointer(skb, skb_transport_offset(skb),
+						sizeof(_udph), &_udph);
+			if (!uh)
+				return -ENOMEM;
+
+			audit_log_format(ab, " saddr=%pI6c daddr=%pI6c proto=%hhu sport=%hu dport=%hu",
+					 &ih->saddr, &ih->daddr, nexthdr,
+					 ntohs(uh->source), ntohs(uh->dest));
+			break;
+		}
+		case IPPROTO_SCTP: {
+			struct sctphdr _sctph;
+			const struct sctphdr *sh;
+
+			sh = skb_header_pointer(skb, skb_transport_offset(skb),
+						sizeof(_sctph), &_sctph);
+			if (!sh)
+				return -ENOMEM;
+
+			audit_log_format(ab, " saddr=%pI6c daddr=%pI6c proto=%hhu sport=%hu dport=%hu",
+					 &ih->saddr, &ih->daddr, nexthdr,
+					 ntohs(sh->source), ntohs(sh->dest));
+			break;
+		}
+		default:
+			audit_log_format(ab, " saddr=%pI6c daddr=%pI6c proto=%hhu",
+					 &ih->saddr, &ih->daddr, nexthdr);
+		}
+
+		break;
+	}
+	default:
+		goto unknown_proto;
+	}
+
+	return 0;
+
+unknown_proto:
+	audit_log_format(ab, " saddr=? daddr=? proto=?");
+	return -EPFNOSUPPORT;
+}
+EXPORT_SYMBOL(audit_log_nf_skb);
 
 /* global counter which is incremented every time something logs in */
 static atomic_t session_id = ATOMIC_INIT(0);
@@ -2571,9 +2777,8 @@ static void __audit_log_end(struct sk_buff *skb)
 		nlh = nlmsg_hdr(skb);
 		nlh->nlmsg_len = skb->len - NLMSG_HDRLEN;
 
-		/* queue the netlink packet and poke the kauditd thread */
+		/* queue the netlink packet */
 		skb_queue_tail(&audit_queue, skb);
-		wake_up_interruptible(&kauditd_wait);
 	} else {
 		audit_log_lost("rate limit exceeded");
 		kfree_skb(skb);
@@ -2598,6 +2803,9 @@ void audit_log_end(struct audit_buffer *ab)
 
 	while ((skb = skb_dequeue(&ab->skb_list)))
 		__audit_log_end(skb);
+
+	/* poke the kauditd thread */
+	wake_up_interruptible(&kauditd_wait);
 
 	audit_buffer_free(ab);
 }

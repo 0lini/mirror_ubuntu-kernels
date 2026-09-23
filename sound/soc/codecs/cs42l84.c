@@ -84,7 +84,7 @@ static const struct regmap_config cs42l84_regmap = {
 static int cs42l84_put_dac_vol(struct snd_kcontrol *kctl,
 			struct snd_ctl_elem_value *val)
 {
-	struct snd_soc_component *component = snd_soc_kcontrol_component(kctl);
+	struct snd_soc_component *component = snd_kcontrol_chip(kctl);
 	struct soc_mixer_control *mc = (struct soc_mixer_control *) kctl->private_value;
 	int vola, volb;
 	int ret, ret2, updated = 0;
@@ -138,7 +138,7 @@ bail:
 static int cs42l84_get_dac_vol(struct snd_kcontrol *kctl,
 			struct snd_ctl_elem_value *val)
 {
-	struct snd_soc_component *component = snd_soc_kcontrol_component(kctl);
+	struct snd_soc_component *component = snd_kcontrol_chip(kctl);
 	struct soc_mixer_control *mc = (struct soc_mixer_control *) kctl->private_value;
 	int vola, volb;
 	int ret;
@@ -357,8 +357,11 @@ struct cs42l84_pll_params {
  * Common PLL Settings for given BCLK
  */
 static const struct cs42l84_pll_params pll_ratio_table[] = {
+	{  2822400, 1, 0, 0x40, 0x000000, 0x03, 0x10, 11289600},
 	{  3072000, 1, 0, 0x40, 0x000000, 0x03, 0x10, 12288000},
+	{  5644800, 1, 0, 0x40, 0x000000, 0x03, 0x10, 11289600},
 	{  6144000, 1, 1, 0x40, 0x000000, 0x03, 0x10, 12288000},
+	{ 11289600, 0, 0, 0, 0, 0, 0,                 11289600},
 	{ 12288000, 0, 0, 0, 0, 0, 0,                 12288000},
 	{ 24576000, 1, 3, 0x40, 0x000000, 0x03, 0x10, 12288000},
 };
@@ -670,14 +673,18 @@ static struct snd_soc_dai_driver cs42l84_dai = {
 			.stream_name = "Playback",
 			.channels_min = 1,
 			.channels_max = 2,
-			.rates = SNDRV_PCM_RATE_48000 | SNDRV_PCM_RATE_96000,
+			.rates = SNDRV_PCM_RATE_44100 | SNDRV_PCM_RATE_48000 |
+				SNDRV_PCM_RATE_88200 | SNDRV_PCM_RATE_96000 |
+				SNDRV_PCM_RATE_176400 | SNDRV_PCM_RATE_192000,
 			.formats = CS42L84_FORMATS,
 		},
 		.capture = {
 			.stream_name = "Capture",
 			.channels_min = 1,
 			.channels_max = 1,
-			.rates = SNDRV_PCM_RATE_48000 | SNDRV_PCM_RATE_96000,
+			.rates = SNDRV_PCM_RATE_44100 | SNDRV_PCM_RATE_48000 |
+				SNDRV_PCM_RATE_88200 | SNDRV_PCM_RATE_96000 |
+				SNDRV_PCM_RATE_176400 | SNDRV_PCM_RATE_192000,
 			.formats = CS42L84_FORMATS,
 		},
 		.symmetric_rate = 1,

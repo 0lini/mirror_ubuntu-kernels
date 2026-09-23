@@ -5,7 +5,6 @@
  */
 
 #include <linux/bitops.h>
-#include <linux/mfd/core.h>
 #include <linux/mfd/macsmc.h>
 #include <linux/module.h>
 #include <linux/nvmem-consumer.h>

@@ -9,16 +9,32 @@
 //! implementation.
 
 use crate::debug::*;
-use crate::driver::{AsahiDevRef, AsahiDevice};
+use crate::driver::{
+    AsahiDevRef,
+    AsahiDevice, //
+};
 use crate::fw::channels::*;
-use crate::fw::initdata::{raw, ChannelRing};
+use crate::fw::initdata::{
+    raw,
+    ChannelRing, //
+};
 use crate::fw::types::*;
-use crate::{buffer, event, gpu, mem};
+use crate::{
+    buffer,
+    event,
+    gpu,
+    mem, //
+};
 use kernel::{
     c_str,
     prelude::*,
     sync::Arc,
-    time::{delay::fsleep, Delta, Instant, Monotonic},
+    time::{
+        delay::fsleep,
+        Delta,
+        Instant,
+        Monotonic, //
+    },
 };
 
 pub(crate) use crate::fw::channels::PipeType;

@@ -115,8 +115,8 @@ static int isp_surf_iommu_map(struct apple_isp *isp, struct isp_surf *surf)
 	size = iommu_map_sgtable(isp->domain, surf->iova, &surf->sgt,
 				 IOMMU_READ | IOMMU_WRITE | IOMMU_CACHE);
 	if (size < surf->size) {
-		dev_err(isp->dev, "failed to iommu_map sgt to iova 0x%llx\n",
-			surf->iova);
+		dev_err(isp->dev, "failed to iommu_map sgt to iova %pad\n",
+			&surf->iova);
 		sg_free_table(&surf->sgt);
 		return -ENXIO;
 	}
@@ -161,8 +161,8 @@ struct isp_surf *__isp_alloc_surface(struct apple_isp *isp, u64 size, bool gc)
 	err = isp_surf_iommu_map(isp, surf);
 	if (err < 0) {
 		dev_err(isp->dev,
-			"failed to iommu_map size 0x%llx to iova 0x%llx\n",
-			surf->size, surf->iova);
+			"failed to iommu_map size 0x%llx to iova %pad\n",
+			surf->size, &surf->iova);
 		goto unreserve_iova;
 	}
 
@@ -191,8 +191,9 @@ struct isp_surf *isp_alloc_surface_vmap(struct apple_isp *isp, u64 size)
 
 	err = isp_surf_vmap(isp, surf);
 	if (err < 0) {
-		dev_err(isp->dev, "failed to vmap iova 0x%llx - 0x%llx\n",
-			surf->iova, surf->iova + surf->size);
+		dma_addr_t iova_end = surf->iova + surf->size;
+		dev_err(isp->dev, "failed to vmap iova %pad - %pad\n",
+			&surf->iova, &iova_end);
 		isp_free_surface(isp, surf);
 		return NULL;
 	}
@@ -233,8 +234,8 @@ int apple_isp_iommu_map_sgt(struct apple_isp *isp, struct isp_surf *surf,
 	mapped = iommu_map_sgtable(isp->domain, surf->iova, sgt,
 				   IOMMU_READ | IOMMU_WRITE | IOMMU_CACHE);
 	if (mapped < surf->size) {
-		dev_err(isp->dev, "failed to iommu_map sgt to iova 0x%llx\n",
-			surf->iova);
+		dev_err(isp->dev, "failed to iommu_map sgt to iova %pad\n",
+			&surf->iova);
 		isp_surf_unreserve_iova(isp, surf);
 		return -ENXIO;
 	}

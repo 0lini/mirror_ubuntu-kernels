@@ -5,17 +5,24 @@
 use core::ops::Deref;
 use core::ptr::NonNull;
 
-use crate::c_str;
-use crate::device::Bound;
-use crate::device::Device;
-use crate::devres::Devres;
-use crate::io;
-use crate::io::resource::Region;
-use crate::io::resource::Resource;
-use crate::io::Io;
-use crate::io::IoRaw;
-use crate::prelude::*;
-use crate::types::declare_flags_type;
+use crate::{
+    device::{
+        Bound,
+        Device, //
+    },
+    devres::Devres,
+    impl_flags,
+    io::{
+        self,
+        resource::{
+            Region,
+            Resource, //
+        },
+        Mmio,
+        MmioRaw, //
+    },
+    prelude::*,
+};
 
 /// An IO request for a specific device and resource.
 pub struct IoRequest<'a> {
@@ -46,7 +53,12 @@ impl<'a> IoRequest<'a> {
     /// illustration purposes.
     ///
     /// ```no_run
-    /// use kernel::{bindings, c_str, platform, of, device::Core};
+    /// use kernel::{
+    ///     bindings,
+    ///     device::Core,
+    ///     of,
+    ///     platform,
+    /// };
     /// struct SampleDriver;
     ///
     /// impl platform::Driver for SampleDriver {
@@ -55,7 +67,7 @@ impl<'a> IoRequest<'a> {
     ///    fn probe(
     ///       pdev: &platform::Device<Core>,
     ///       info: Option<&Self::IdInfo>,
-    ///    ) -> Result<Pin<KBox<Self>>> {
+    ///    ) -> impl PinInit<Self, Error> {
     ///       let offset = 0; // Some offset.
     ///
     ///       // If the size is known at compile time, use [`Self::iomap_sized`].
@@ -72,7 +84,7 @@ impl<'a> IoRequest<'a> {
     ///
     ///       io.write32_relaxed(data, offset);
     ///
-    ///       # Ok(KBox::new(SampleDriver, GFP_KERNEL)?.into())
+    ///       # Ok(SampleDriver)
     ///     }
     /// }
     /// ```
@@ -104,7 +116,12 @@ impl<'a> IoRequest<'a> {
     /// illustration purposes.
     ///
     /// ```no_run
-    /// use kernel::{bindings, c_str, platform, of, device::Core};
+    /// use kernel::{
+    ///     bindings,
+    ///     device::Core,
+    ///     of,
+    ///     platform,
+    /// };
     /// struct SampleDriver;
     ///
     /// impl platform::Driver for SampleDriver {
@@ -113,7 +130,7 @@ impl<'a> IoRequest<'a> {
     ///    fn probe(
     ///       pdev: &platform::Device<Core>,
     ///       info: Option<&Self::IdInfo>,
-    ///    ) -> Result<Pin<KBox<Self>>> {
+    ///    ) -> impl PinInit<Self, Error> {
     ///       let offset = 0; // Some offset.
     ///
     ///       // Unlike [`Self::iomap_sized`], here the size of the memory region
@@ -130,7 +147,7 @@ impl<'a> IoRequest<'a> {
     ///
     ///       io.try_write32_relaxed(data, offset)?;
     ///
-    ///       # Ok(KBox::new(SampleDriver, GFP_KERNEL)?.into())
+    ///       # Ok(SampleDriver)
     ///     }
     /// }
     /// ```
@@ -166,7 +183,7 @@ impl<const SIZE: usize> ExclusiveIoMem<SIZE> {
     fn ioremap(resource: &Resource) -> Result<Self> {
         let start = resource.start();
         let size = resource.size();
-        let name = resource.name().unwrap_or(c_str!(""));
+        let name = resource.name().unwrap_or_default();
 
         let region = resource
             .request_region(
@@ -197,7 +214,7 @@ impl<const SIZE: usize> ExclusiveIoMem<SIZE> {
 }
 
 impl<const SIZE: usize> Deref for ExclusiveIoMem<SIZE> {
-    type Target = Io<SIZE>;
+    type Target = Mmio<SIZE>;
 
     fn deref(&self) -> &Self::Target {
         &self.iomem
@@ -211,10 +228,10 @@ impl<const SIZE: usize> Deref for ExclusiveIoMem<SIZE> {
 ///
 /// # Invariants
 ///
-/// [`IoMem`] always holds an [`IoRaw`] instance that holds a valid pointer to the
+/// [`IoMem`] always holds an [`MmioRaw`] instance that holds a valid pointer to the
 /// start of the I/O memory mapped region.
 pub struct IoMem<const SIZE: usize = 0> {
-    io: IoRaw<SIZE>,
+    io: MmioRaw<SIZE>,
 }
 
 impl<const SIZE: usize> IoMem<SIZE> {
@@ -249,7 +266,7 @@ impl<const SIZE: usize> IoMem<SIZE> {
             return Err(ENOMEM);
         }
 
-        let io = IoRaw::new(addr as usize, size)?;
+        let io = MmioRaw::new(addr as usize, size)?;
         let io = IoMem { io };
 
         Ok(io)
@@ -272,43 +289,44 @@ impl<const SIZE: usize> Drop for IoMem<SIZE> {
 }
 
 impl<const SIZE: usize> Deref for IoMem<SIZE> {
-    type Target = Io<SIZE>;
+    type Target = Mmio<SIZE>;
 
     fn deref(&self) -> &Self::Target {
         // SAFETY: Safe as by the invariant of `IoMem`.
-        unsafe { Io::from_raw(&self.io) }
+        unsafe { Mmio::from_raw(&self.io) }
     }
 }
 
-declare_flags_type! {
+impl_flags!(
     /// Flags to be used when remapping memory.
-    ///
-    /// They can be combined with the operators `|`, `&`, and `!`.
-    pub struct MemFlags(crate::ffi::c_ulong) = 0;
-}
+    #[derive(Debug, Clone, Default, Copy, PartialEq, Eq)]
+    pub struct MemFlags(usize);
 
-impl MemFlags {
-    /// Matches the default mapping for System RAM on the architecture.
-    ///
-    /// This is usually a read-allocate write-back cache. Moreover, if this flag is specified and
-    /// the requested remap region is RAM, memremap() will bypass establishing a new mapping and
-    /// instead return a pointer into the direct map.
-    pub const WB: MemFlags = MemFlags(bindings::MEMREMAP_WB as _);
+    /// Enum mirroring the C MEMREMAP_* eum values
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum MemFlag {
+        /// Matches the default mapping for System RAM on the architecture.
+        ///
+        /// This is usually a read-allocate write-back cache. Moreover, if this flag is specified and
+        /// the requested remap region is RAM, memremap() will bypass establishing a new mapping and
+        /// instead return a pointer into the direct map.
+        WB = bindings::MEMREMAP_WB as usize,
 
-    /// Establish a mapping whereby writes either bypass the cache or are written through to memory
-    /// and never exist in a cache-dirty state with respect to program visibility.
-    ///
-    /// Attempts to map System RAM with this mapping type will fail.
-    pub const WT: MemFlags = MemFlags(bindings::MEMREMAP_WT as _);
-    /// Establish a writecombine mapping, whereby writes may be coalesced together  (e.g. in the
-    /// CPU's write buffers), but is otherwise uncached.
-    ///
-    /// Attempts to map System RAM with this mapping type will fail.
-    pub const WC: MemFlags = MemFlags(bindings::MEMREMAP_WC as _);
+        /// Establish a mapping whereby writes either bypass the cache or are written through to memory
+        /// and never exist in a cache-dirty state with respect to program visibility.
+        ///
+        /// Attempts to map System RAM with this mapping type will fail.
+        WT = bindings::MEMREMAP_WT as usize,
 
-    // Note: Skipping MEMREMAP_ENC/DEC since they are under-documented and have zero
-    // users outside of arch/x86.
-}
+        /// Establish a writecombine mapping, whereby writes may be coalesced together  (e.g. in the
+        /// CPU's write buffers), but is otherwise uncached.
+        ///
+        /// Attempts to map System RAM with this mapping type will fail.
+        WC = bindings::MEMREMAP_WC as usize,
+        // Note: Skipping MEMREMAP_ENC/DEC since they are under-documented and have zero
+        // users outside of arch/x86.
+    }
+);
 
 /// Represents a non-MMIO memory block. This is like [`IoMem`], but for cases where it is known
 /// that the resource being mapped does not have I/O side effects.
@@ -329,19 +347,19 @@ impl Mem {
     /// to a different address.
     ///
     /// If multiple caching flags are specified, the different mapping types will be attempted in
-    /// the order [`MemFlags::WB`], [`MemFlags::WT`], [`MemFlags::WC`].
+    /// the order [`MemFlag::WB`], [`MemFlag::WT`], [`MemFlag::WC`].
     ///
     /// # Flags
     ///
-    /// * [`MemFlags::WB`]: Matches the default mapping for System RAM on the architecture.
+    /// * [`MemFlag::WB`]: Matches the default mapping for System RAM on the architecture.
     ///   This is usually a read-allocate write-back cache. Moreover, if this flag is specified and
     ///   the requested remap region is RAM, memremap() will bypass establishing a new mapping and
     ///   instead return a pointer into the direct map.
     ///
-    /// * [`MemFlags::WT`]: Establish a mapping whereby writes either bypass the cache or are written
+    /// * [`MemFlag::WT`]: Establish a mapping whereby writes either bypass the cache or are written
     ///   through to memory and never exist in a cache-dirty state with respect to program visibility.
     ///   Attempts to map System RAM with this mapping type will fail.
-    /// * [`MemFlags::WC`]: Establish a writecombine mapping, whereby writes may be coalesced together
+    /// * [`MemFlag::WC`]: Establish a writecombine mapping, whereby writes may be coalesced together
     ///   (e.g. in the CPU's write buffers), but is otherwise uncached. Attempts to map System RAM with
     ///   this mapping type will fail.
     ///
@@ -353,7 +371,7 @@ impl Mem {
     pub unsafe fn try_new(res: Resource, flags: MemFlags) -> Result<Self> {
         let size: usize = res.size().try_into()?;
 
-        let addr = unsafe { bindings::memremap(res.start(), size, flags.as_raw()) };
+        let addr = unsafe { bindings::memremap(res.start(), size, flags.into()) };
         let ptr = NonNull::new(addr).ok_or(ENOMEM)?;
         // INVARIANT: `ptr` is non-null and was returned by `memremap`, so it is valid.
         Ok(Self { ptr, size })

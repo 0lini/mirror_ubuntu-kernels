@@ -8,11 +8,17 @@
 use kernel::dma_fence::*;
 use kernel::prelude::*;
 use kernel::{
-    c_str, dma_fence,
+    c_str,
+    dma_fence,
     drm::sched,
     macros::versions,
-    sync::{Arc, LockClassKey, Mutex},
-    uapi, xarray,
+    sync::{
+        Arc,
+        LockClassKey,
+        Mutex, //
+    },
+    uapi,
+    xarray, //
 };
 
 use crate::alloc::Allocator;
@@ -24,10 +30,26 @@ use crate::gpu::GpuManager;
 use crate::inner_weak_ptr;
 use crate::microseq;
 use crate::module_parameters;
-use crate::util::{AnyBitPattern, Reader};
-use crate::{alloc, buffer, channel, event, file, fw, gpu, mmu, workqueue};
+use crate::util::{
+    AnyBitPattern,
+    Reader, //
+};
+use crate::{
+    alloc,
+    buffer,
+    channel,
+    event,
+    file,
+    fw,
+    gpu,
+    mmu,
+    workqueue, //
+};
 
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{
+    AtomicU64,
+    Ordering, //
+};
 
 const DEBUG_CLASS: DebugFlags = DebugFlags::Queue;
 
@@ -144,9 +166,7 @@ impl JobFence::ver {
         );
         if remain == 0 {
             mod_pr_debug!("JobFence[{}]: Signaling\n", self.id);
-            if self.signal().is_err() {
-                pr_err!("JobFence[{}]: Fence signal failed\n", self.id);
-            }
+            self.signal();
         }
     }
 }
@@ -393,7 +413,9 @@ impl sched::JobImpl for QueueJob::ver {
     fn cancel(job: &mut sched::Job<Self>) {
         dev_info!(
             job.dev.as_ref(),
-            "QueueJob {}: Job canceled on DRM scheduler teardown\n", job.id);
+            "QueueJob {}: Job canceled on DRM scheduler teardown\n",
+            job.id
+        );
     }
 }
 

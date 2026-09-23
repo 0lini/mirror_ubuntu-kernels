@@ -191,7 +191,14 @@ static void usb_parse_ss_endpoint_companion(struct device *ddev, int cfgno,
 			(desc->bMaxBurst + 1);
 	else
 		max_tx = 999999;
-	if (le16_to_cpu(desc->wBytesPerInterval) > max_tx) {
+	/*
+	 * wBytesPerInterval > max_tx is bogus, but USB3 spec doesn't forbid the opposite.
+	 * Experience shows that wBytesPerInterval < wMaxPacketSize on common interrupt IN
+	 * endpoints is usually bogus too, and recent HCs enforce interrupt BW limits.
+	 */
+	if (le16_to_cpu(desc->wBytesPerInterval) > max_tx ||
+	    (le16_to_cpu(desc->wBytesPerInterval) < usb_endpoint_maxp(&ep->desc) &&
+	     usb_endpoint_is_int_in(&ep->desc))) {
 		dev_notice(ddev, "%s endpoint with wBytesPerInterval of %d in "
 				"config %d interface %d altsetting %d ep %d: "
 				"setting to %d\n",
@@ -507,8 +514,8 @@ static int usb_parse_endpoint(struct device *ddev, int cfgno,
 	}
 
 	/* Parse a possible eUSB2 periodic endpoint companion descriptor */
-	if (bcdUSB == 0x0220 && d->wMaxPacketSize == 0 &&
-	    (usb_endpoint_xfer_isoc(d) || usb_endpoint_xfer_int(d)))
+	if (udev->speed == USB_SPEED_HIGH && bcdUSB == 0x0220 &&
+	    !le16_to_cpu(d->wMaxPacketSize) && usb_endpoint_is_isoc_in(d))
 		usb_parse_eusb2_isoc_endpoint_companion(ddev, cfgno, inum, asnum,
 							endpoint, buffer, size);
 
@@ -823,7 +830,7 @@ static int usb_parse_configuration(struct usb_device *dev, int cfgidx,
 			nalts[i] = j = USB_MAXALTSETTING;
 		}
 
-		intfc = kzalloc(struct_size(intfc, altsetting, j), GFP_KERNEL);
+		intfc = kzalloc_flex(*intfc, altsetting, j);
 		config->intf_cache[i] = intfc;
 		if (!intfc)
 			return -ENOMEM;
@@ -927,7 +934,11 @@ int usb_get_configuration(struct usb_device *dev)
 		dev->descriptor.bNumConfigurations = ncfg = USB_MAXCONFIG;
 	}
 
-	if (ncfg < 1) {
+	if (ncfg < 1 && dev->quirks & USB_QUIRK_FORCE_ONE_CONFIG) {
+		dev_info(ddev, "Device claims zero configurations, forcing to 1\n");
+		dev->descriptor.bNumConfigurations = 1;
+		ncfg = 1;
+	} else if (ncfg < 1) {
 		dev_err(ddev, "no configurations\n");
 		return -EINVAL;
 	}
@@ -1045,7 +1056,7 @@ int usb_get_bos_descriptor(struct usb_device *dev)
 		return -ENOMSG;
 	}
 
-	bos = kzalloc(sizeof(*bos), GFP_KERNEL);
+	bos = kzalloc_obj(*bos);
 	if (!bos)
 		return -ENOMEM;
 
@@ -1066,7 +1077,7 @@ int usb_get_bos_descriptor(struct usb_device *dev)
 	if (total_len < length)
 		return -EINVAL;
 
-	dev->bos = kzalloc(sizeof(*dev->bos), GFP_KERNEL);
+	dev->bos = kzalloc_obj(*dev->bos);
 	if (!dev->bos)
 		return -ENOMEM;
 

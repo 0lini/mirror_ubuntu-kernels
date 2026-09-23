@@ -33,6 +33,7 @@
 #include <linux/ktime.h>
 #include <linux/security.h>
 #include <linux/secretmem.h>
+#include <linux/of.h>
 #include <trace/events/power.h>
 
 #include "power.h"
@@ -110,7 +111,8 @@ bool hibernation_available(void)
 {
 	return nohibernate == 0 &&
 		!security_locked_down(LOCKDOWN_HIBERNATION) &&
-		!secretmem_active() && !cxl_mem_active();
+		!secretmem_active() && !cxl_mem_active() &&
+		!of_machine_is_compatible("apple,arm-platform");
 }
 
 /**
@@ -820,9 +822,11 @@ int hibernate(void)
 	if (error)
 		goto Restore;
 
-	ksys_sync_helper();
-	if (filesystem_freeze_enabled)
-		filesystems_freeze();
+	error = pm_sleep_fs_sync();
+	if (error)
+		goto Notify;
+
+	filesystems_freeze(filesystem_freeze_enabled);
 
 	error = freeze_processes();
 	if (error)
@@ -892,6 +896,7 @@ int hibernate(void)
 	freezer_test_done = false;
  Exit:
 	filesystems_thaw();
+ Notify:
 	pm_notifier_call_chain(PM_POST_HIBERNATION);
  Restore:
 	pm_restore_console();
@@ -928,8 +933,7 @@ int hibernate_quiet_exec(int (*func)(void *data), void *data)
 	if (error)
 		goto restore;
 
-	if (filesystem_freeze_enabled)
-		filesystems_freeze();
+	filesystems_freeze(filesystem_freeze_enabled);
 
 	error = freeze_processes();
 	if (error)
@@ -1079,8 +1083,7 @@ static int software_resume(void)
 	if (error)
 		goto Restore;
 
-	if (filesystem_freeze_enabled)
-		filesystems_freeze();
+	filesystems_freeze(filesystem_freeze_enabled);
 
 	pm_pr_dbg("Preparing processes for hibernation restore.\n");
 	error = freeze_processes();

@@ -564,6 +564,7 @@ struct afs_server {
 #define AFS_SERVER_FL_NO_IBULK	17		/* Fileserver doesn't support FS.InlineBulkStatus */
 #define AFS_SERVER_FL_NO_RM2	18		/* Fileserver doesn't support YFS.RemoveFile2 */
 #define AFS_SERVER_FL_HAS_FS64	19		/* Fileserver supports FS.{Fetch,Store}Data64 */
+#define AFS_SERVER_FL_NO_RENAME2 20		/* YFS Fileserver doesn't support enhanced rename */
 	refcount_t		ref;		/* Object refcount */
 	atomic_t		active;		/* Active user count */
 	u32			addr_version;	/* Address list version */
@@ -710,6 +711,7 @@ struct afs_vnode {
 #define AFS_VNODE_DIR_READ	11		/* Set if we've read a dir's contents */
 
 	struct folio_queue	*directory;	/* Directory contents */
+	struct afs_symlink __rcu *symlink;	/* Symlink content */
 	struct list_head	wb_keys;	/* List of keys available for writeback */
 	struct list_head	pending_locks;	/* locks waiting to be granted */
 	struct list_head	granted_locks;	/* locks granted on this file */
@@ -774,6 +776,15 @@ struct afs_permits {
 	unsigned short		nr_permits;	/* Number of records */
 	bool			invalidated;	/* Invalidated due to key change */
 	struct afs_permit	permits[] __counted_by(nr_permits);	/* List of permits sorted by key pointer */
+};
+
+/*
+ * Copy of symlink content for normal use.
+ */
+struct afs_symlink {
+	struct rcu_head		rcu;
+	refcount_t		ref;
+	char			content[];
 };
 
 /*
@@ -887,15 +898,16 @@ struct afs_operation {
 		struct {
 			int	reason;		/* enum afs_edit_dir_reason */
 			mode_t	mode;
-			const char *symlink;
+			struct afs_symlink *symlink;
 		} create;
 		struct {
 			bool	need_rehash;
 		} unlink;
 		struct {
-			struct dentry *rehash;
-			struct dentry *tmp;
-			bool	new_negative;
+			struct dentry	*rehash;
+			struct dentry	*tmp;
+			unsigned int	rename_flags;
+			bool		new_negative;
 		} rename;
 		struct {
 			struct netfs_io_subrequest *subreq;
@@ -1097,22 +1109,19 @@ extern const struct inode_operations afs_dir_inode_operations;
 extern const struct address_space_operations afs_dir_aops;
 extern const struct dentry_operations afs_fs_dentry_operations;
 
-ssize_t afs_read_single(struct afs_vnode *dvnode, struct file *file);
 ssize_t afs_read_dir(struct afs_vnode *dvnode, struct file *file)
 	__acquires(&dvnode->validate_lock);
 extern void afs_d_release(struct dentry *);
 extern void afs_check_for_remote_deletion(struct afs_operation *);
-int afs_single_writepages(struct address_space *mapping,
-			  struct writeback_control *wbc);
 
 /*
  * dir_edit.c
  */
-extern void afs_edit_dir_add(struct afs_vnode *, struct qstr *, struct afs_fid *,
+extern void afs_edit_dir_add(struct afs_vnode *, const struct qstr *, struct afs_fid *,
 			     enum afs_edit_dir_reason);
-extern void afs_edit_dir_remove(struct afs_vnode *, struct qstr *, enum afs_edit_dir_reason);
-void afs_edit_dir_update_dotdot(struct afs_vnode *vnode, struct afs_vnode *new_dvnode,
-				enum afs_edit_dir_reason why);
+extern void afs_edit_dir_remove(struct afs_vnode *, const struct qstr *, enum afs_edit_dir_reason);
+void afs_edit_dir_update(struct afs_vnode *vnode, const struct qstr *name,
+			 struct afs_vnode *new_dvnode, enum afs_edit_dir_reason why);
 void afs_mkdir_init_dir(struct afs_vnode *dvnode, struct afs_vnode *parent_vnode);
 
 /*
@@ -1123,7 +1132,7 @@ bool afs_dir_init_iter(struct afs_dir_iter *iter, const struct qstr *name);
 union afs_xdr_dir_block *afs_dir_find_block(struct afs_dir_iter *iter, size_t block);
 int afs_dir_search_bucket(struct afs_dir_iter *iter, const struct qstr *name,
 			  struct afs_fid *_fid);
-int afs_dir_search(struct afs_vnode *dvnode, struct qstr *name,
+int afs_dir_search(struct afs_vnode *dvnode, const struct qstr *name,
 		   struct afs_fid *_fid, afs_dataversion_t *_dir_version);
 
 /*
@@ -1156,6 +1165,7 @@ extern int afs_open(struct inode *, struct file *);
 extern int afs_release(struct inode *, struct file *);
 void afs_fetch_data_async_rx(struct work_struct *work);
 void afs_fetch_data_immediate_cancel(struct afs_call *call);
+void afs_set_i_size(struct afs_vnode *vnode, loff_t new_i_size);
 
 /*
  * flock.c
@@ -1245,10 +1255,6 @@ extern void afs_fs_probe_cleanup(struct afs_net *);
  */
 extern const struct afs_operation_ops afs_fetch_status_operation;
 
-void afs_init_new_symlink(struct afs_vnode *vnode, struct afs_operation *op);
-const char *afs_get_link(struct dentry *dentry, struct inode *inode,
-			 struct delayed_call *callback);
-int afs_readlink(struct dentry *dentry, char __user *buffer, int buflen);
 extern void afs_vnode_commit_status(struct afs_operation *, struct afs_vnode_param *);
 extern int afs_fetch_status(struct afs_vnode *, struct key *, bool, afs_access_t *);
 extern int afs_ilookup5_test_by_fid(struct inode *, void *);
@@ -1599,6 +1605,21 @@ extern int __init afs_fs_init(void);
 extern void afs_fs_exit(void);
 
 /*
+ * symlink.c
+ */
+extern const struct inode_operations afs_symlink_inode_operations;
+extern const struct address_space_operations afs_symlink_aops;
+
+void afs_invalidate_symlink(struct afs_vnode *vnode);
+void afs_evict_symlink(struct afs_vnode *vnode);
+void afs_init_new_symlink(struct afs_vnode *vnode, struct afs_operation *op);
+const char *afs_get_link(struct dentry *dentry, struct inode *inode,
+			 struct delayed_call *callback);
+int afs_readlink(struct dentry *dentry, char __user *buffer, int buflen);
+int afs_symlink_writepages(struct address_space *mapping,
+			   struct writeback_control *wbc);
+
+/*
  * validation.c
  */
 bool afs_check_validity(const struct afs_vnode *vnode);
@@ -1704,6 +1725,9 @@ extern void yfs_fs_remove_dir(struct afs_operation *);
 extern void yfs_fs_link(struct afs_operation *);
 extern void yfs_fs_symlink(struct afs_operation *);
 extern void yfs_fs_rename(struct afs_operation *);
+void yfs_fs_rename_replace(struct afs_operation *op);
+void yfs_fs_rename_noreplace(struct afs_operation *op);
+void yfs_fs_rename_exchange(struct afs_operation *op);
 extern void yfs_fs_store_data(struct afs_operation *);
 extern void yfs_fs_setattr(struct afs_operation *);
 extern void yfs_fs_get_volume_status(struct afs_operation *);
@@ -1752,16 +1776,6 @@ static inline void afs_update_dentry_version(struct afs_operation *op,
 	if (!op->cumul_error.error)
 		dentry->d_fsdata =
 			(void *)(unsigned long)dir_vp->scb.status.data_version;
-}
-
-/*
- * Set the file size and block count.  Estimate the number of 512 bytes blocks
- * used, rounded up to nearest 1K for consistency with other AFS clients.
- */
-static inline void afs_set_i_size(struct afs_vnode *vnode, u64 size)
-{
-	i_size_write(&vnode->netfs.inode, size);
-	vnode->netfs.inode.i_blocks = ((size + 1023) >> 10) << 1;
 }
 
 /*

@@ -53,6 +53,12 @@ static int hfsplus_system_read_inode(struct inode *inode)
 		return -EIO;
 	}
 
+	/*
+	 * Assign a dummy file type, for may_open() requires that
+	 * an inode has a valid file type.
+	 */
+	inode->i_mode = S_IFREG;
+
 	return 0;
 }
 
@@ -65,7 +71,7 @@ struct inode *hfsplus_iget(struct super_block *sb, unsigned long ino)
 	inode = iget_locked(sb, ino);
 	if (!inode)
 		return ERR_PTR(-ENOMEM);
-	if (!(inode->i_state & I_NEW))
+	if (!(inode_state_read_once(inode) & I_NEW))
 		return inode;
 
 	atomic_set(&HFSPLUS_I(inode)->opencnt, 0);
@@ -163,7 +169,7 @@ static int hfsplus_write_inode(struct inode *inode,
 {
 	int err;
 
-	hfs_dbg(INODE, "hfsplus_write_inode: %lu\n", inode->i_ino);
+	hfs_dbg("ino %lu\n", inode->i_ino);
 
 	err = hfsplus_ext_write_extent(inode);
 	if (err)
@@ -178,7 +184,7 @@ static int hfsplus_write_inode(struct inode *inode,
 
 static void hfsplus_evict_inode(struct inode *inode)
 {
-	hfs_dbg(INODE, "hfsplus_evict_inode: %lu\n", inode->i_ino);
+	hfs_dbg("ino %lu\n", inode->i_ino);
 	truncate_inode_pages_final(&inode->i_data);
 	clear_inode(inode);
 	if (HFSPLUS_IS_RSRC(inode)) {
@@ -194,7 +200,7 @@ int hfsplus_commit_superblock(struct super_block *sb)
 	int write_backup = 0;
 	int error = 0, error2;
 
-	hfs_dbg(SUPER, "hfsplus_sync_fs\n");
+	hfs_dbg("starting...\n");
 
 	mutex_lock(&sbi->vh_mutex);
 	mutex_lock(&sbi->alloc_mutex);
@@ -202,6 +208,10 @@ int hfsplus_commit_superblock(struct super_block *sb)
 	vhdr->next_cnid = cpu_to_be32(sbi->next_cnid);
 	vhdr->folder_count = cpu_to_be32(sbi->folder_count);
 	vhdr->file_count = cpu_to_be32(sbi->file_count);
+
+	hfs_dbg("free_blocks %u, next_cnid %u, folder_count %u, file_count %u\n",
+		sbi->free_blocks, sbi->next_cnid,
+		sbi->folder_count, sbi->file_count);
 
 	if (test_and_clear_bit(HFSPLUS_SB_WRITEBACKUP, &sbi->flags)) {
 		memcpy(sbi->s_backup_vhdr, sbi->s_vhdr, sizeof(*sbi->s_vhdr));
@@ -225,7 +235,7 @@ out:
 	mutex_unlock(&sbi->alloc_mutex);
 	mutex_unlock(&sbi->vh_mutex);
 
-	hfs_dbg(SUPER, "finished: err %d\n", error);
+	hfs_dbg("finished: err %d\n", error);
 
 	return error;
 }
@@ -238,7 +248,7 @@ static int hfsplus_sync_fs(struct super_block *sb, int wait)
 	if (!wait)
 		return 0;
 
-	hfs_dbg(SUPER, "starting...\n");
+	hfs_dbg("starting...\n");
 
 	/*
 	 * Explicitly write out the special metadata inodes.
@@ -268,6 +278,8 @@ static int hfsplus_sync_fs(struct super_block *sb, int wait)
 
 	if (!test_bit(HFSPLUS_SB_NOBARRIER, &sbi->flags))
 		blkdev_issue_flush(sb->s_bdev);
+
+	hfs_dbg("finished: err %d\n", error);
 
 	return error;
 }
@@ -317,7 +329,7 @@ static void hfsplus_put_super(struct super_block *sb)
 {
 	struct hfsplus_sb_info *sbi = HFSPLUS_SB(sb);
 
-	hfs_dbg(SUPER, "hfsplus_put_super\n");
+	hfs_dbg("starting...\n");
 
 	cancel_delayed_work_sync(&sbi->sync_work);
 
@@ -338,7 +350,7 @@ static void hfsplus_put_super(struct super_block *sb)
 	hfs_btree_close(sbi->ext_tree);
 	kfree(sbi->s_vhdr_buf);
 	kfree(sbi->s_backup_vhdr_buf);
-	call_rcu(&sbi->rcu, delayed_free);
+	hfs_dbg("finished\n");
 }
 
 static int hfsplus_statfs(struct dentry *dentry, struct kstatfs *buf)
@@ -557,9 +569,11 @@ static int hfsplus_fill_super(struct super_block *sb, struct fs_context *fc)
 	if (err)
 		goto out_put_root;
 	err = hfsplus_cat_build_key(sb, fd.search_key, HFSPLUS_ROOT_CNID, &str);
-	if (unlikely(err < 0))
+	if (unlikely(err < 0)) {
+		hfs_find_exit(&fd);
 		goto out_put_root;
-	if (!hfs_brec_read(&fd, &entry, sizeof(entry))) {
+	}
+	if (!hfsplus_brec_read_cat(&fd, &entry)) {
 		hfs_find_exit(&fd);
 		if (entry.type != cpu_to_be16(HFSPLUS_FOLDER)) {
 			err = -EIO;
@@ -640,9 +654,7 @@ out_free_vhdr:
 	kfree(sbi->s_vhdr_buf);
 	kfree(sbi->s_backup_vhdr_buf);
 out_unload_nls:
-	unload_nls(sbi->nls);
 	unload_nls(nls);
-	kfree(sbi);
 	return err;
 }
 
@@ -688,7 +700,7 @@ static int hfsplus_init_fs_context(struct fs_context *fc)
 {
 	struct hfsplus_sb_info *sbi;
 
-	sbi = kzalloc(sizeof(struct hfsplus_sb_info), GFP_KERNEL);
+	sbi = kzalloc_obj(struct hfsplus_sb_info);
 	if (!sbi)
 		return -ENOMEM;
 
@@ -701,10 +713,18 @@ static int hfsplus_init_fs_context(struct fs_context *fc)
 	return 0;
 }
 
+static void hfsplus_kill_super(struct super_block *sb)
+{
+	struct hfsplus_sb_info *sbi = HFSPLUS_SB(sb);
+
+	kill_block_super(sb);
+	call_rcu(&sbi->rcu, delayed_free);
+}
+
 static struct file_system_type hfsplus_fs_type = {
 	.owner		= THIS_MODULE,
 	.name		= "hfsplus",
-	.kill_sb	= kill_block_super,
+	.kill_sb	= hfsplus_kill_super,
 	.fs_flags	= FS_REQUIRES_DEV,
 	.init_fs_context = hfsplus_init_fs_context,
 };

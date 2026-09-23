@@ -269,7 +269,8 @@ static int cros_ec_keyb_work(struct notifier_block *nb,
 
 		if (ckdev->ec->event_size != ckdev->cols) {
 			dev_err(ckdev->dev,
-				"Discarded incomplete key matrix event.\n");
+				"Discarded key matrix event, unexpected length: %d != %d\n",
+				ckdev->ec->event_size, ckdev->cols);
 			return NOTIFY_OK;
 		}
 
@@ -710,6 +711,12 @@ static int cros_ec_keyb_probe(struct platform_device *pdev)
 	 */
 	ec = dev_get_drvdata(pdev->dev.parent);
 	if (!ec)
+		return -EPROBE_DEFER;
+	/*
+	 * Even if the cros_ec_device pointer is available, still need to check
+	 * if the device is fully registered before using it.
+	 */
+	if (!cros_ec_device_registered(ec))
 		return -EPROBE_DEFER;
 
 	ckdev = devm_kzalloc(dev, sizeof(*ckdev), GFP_KERNEL);

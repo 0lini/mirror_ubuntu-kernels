@@ -41,6 +41,7 @@
 #include <drm/gpu_scheduler.h>
 #include <kunit/test.h>
 #include <linux/auxiliary_bus.h>
+#include <linux/bitmap.h>
 #include <linux/blk-mq.h>
 #include <linux/blk_types.h>
 #include <linux/blkdev.h>
@@ -51,6 +52,7 @@
 #include <linux/cpufreq.h>
 #include <linux/cpumask.h>
 #include <linux/cred.h>
+#include <linux/debugfs.h>
 #include <linux/devcoredump.h>
 #include <linux/device/faux.h>
 #include <linux/dma-direction.h>
@@ -60,11 +62,16 @@
 #include <linux/dma-resv.h>
 #include <linux/errname.h>
 #include <linux/ethtool.h>
+#include <linux/fdtable.h>
 #include <linux/file.h>
 #include <linux/firmware.h>
 #include <linux/fs.h>
+#include <linux/i2c.h>
 #include <linux/iio/iio.h>
 #include <linux/iio/types.h>
+#include <linux/interrupt.h>
+#include <linux/io-pgtable.h>
+#include <linux/iommu.h>
 #include <linux/ioport.h>
 #include <linux/iosys-map.h>
 #include <linux/jiffies.h>
@@ -83,6 +90,8 @@
 #include <linux/pm_opp.h>
 #include <linux/poll.h>
 #include <linux/property.h>
+#include <linux/pwm.h>
+#include <linux/random.h>
 #include <linux/refcount.h>
 #include <linux/regulator/consumer.h>
 #include <linux/sched.h>
@@ -90,7 +99,10 @@
 #include <linux/slab.h>
 #include <linux/soc/apple/mailbox.h>
 #include <linux/soc/apple/rtkit.h>
+#include <linux/sys_soc.h>
+#include <linux/task_work.h>
 #include <linux/tracepoint.h>
+#include <linux/usb.h>
 #include <linux/wait.h>
 #include <linux/workqueue.h>
 #include <linux/xarray.h>
@@ -99,6 +111,12 @@
 #include <sound/pcm.h>
 #include <trace/events/rust_sample.h>
 
+/*
+ * The driver-core Rust code needs to know about some C driver-core private
+ * structures.
+ */
+#include <../../drivers/base/base.h>
+
 #if defined(CONFIG_DRM_PANIC_SCREEN_QR_CODE)
 // Used by `#[export]` in `drivers/gpu/drm/drm_panic_qr.rs`.
 #include <drm/drm_panic.h>
@@ -106,6 +124,7 @@
 
 /* `bindgen` gets confused at certain things. */
 const size_t RUST_CONST_HELPER_ARCH_SLAB_MINALIGN = ARCH_SLAB_MINALIGN;
+const size_t RUST_CONST_HELPER_ARCH_KMALLOC_MINALIGN = ARCH_KMALLOC_MINALIGN;
 const size_t RUST_CONST_HELPER_PAGE_SIZE = PAGE_SIZE;
 const gfp_t RUST_CONST_HELPER_GFP_ATOMIC = GFP_ATOMIC;
 const gfp_t RUST_CONST_HELPER_GFP_KERNEL = GFP_KERNEL;
@@ -129,4 +148,35 @@ const xa_mark_t RUST_CONST_HELPER_XA_PRESENT = XA_PRESENT;
 
 const gfp_t RUST_CONST_HELPER_XA_FLAGS_ALLOC = XA_FLAGS_ALLOC;
 const gfp_t RUST_CONST_HELPER_XA_FLAGS_ALLOC1 = XA_FLAGS_ALLOC1;
+
 const vm_flags_t RUST_CONST_HELPER_VM_MERGEABLE = VM_MERGEABLE;
+const vm_flags_t RUST_CONST_HELPER_VM_READ = VM_READ;
+const vm_flags_t RUST_CONST_HELPER_VM_WRITE = VM_WRITE;
+const vm_flags_t RUST_CONST_HELPER_VM_EXEC = VM_EXEC;
+const vm_flags_t RUST_CONST_HELPER_VM_SHARED = VM_SHARED;
+const vm_flags_t RUST_CONST_HELPER_VM_MAYREAD = VM_MAYREAD;
+const vm_flags_t RUST_CONST_HELPER_VM_MAYWRITE = VM_MAYWRITE;
+const vm_flags_t RUST_CONST_HELPER_VM_MAYEXEC = VM_MAYEXEC;
+const vm_flags_t RUST_CONST_HELPER_VM_MAYSHARE = VM_MAYEXEC;
+const vm_flags_t RUST_CONST_HELPER_VM_PFNMAP = VM_PFNMAP;
+const vm_flags_t RUST_CONST_HELPER_VM_IO = VM_IO;
+const vm_flags_t RUST_CONST_HELPER_VM_DONTCOPY = VM_DONTCOPY;
+const vm_flags_t RUST_CONST_HELPER_VM_DONTEXPAND = VM_DONTEXPAND;
+const vm_flags_t RUST_CONST_HELPER_VM_LOCKONFAULT = VM_LOCKONFAULT;
+const vm_flags_t RUST_CONST_HELPER_VM_ACCOUNT = VM_ACCOUNT;
+const vm_flags_t RUST_CONST_HELPER_VM_NORESERVE = VM_NORESERVE;
+const vm_flags_t RUST_CONST_HELPER_VM_HUGETLB = VM_HUGETLB;
+const vm_flags_t RUST_CONST_HELPER_VM_SYNC = VM_SYNC;
+const vm_flags_t RUST_CONST_HELPER_VM_ARCH_1 = VM_ARCH_1;
+const vm_flags_t RUST_CONST_HELPER_VM_WIPEONFORK = VM_WIPEONFORK;
+const vm_flags_t RUST_CONST_HELPER_VM_DONTDUMP = VM_DONTDUMP;
+const vm_flags_t RUST_CONST_HELPER_VM_SOFTDIRTY = VM_SOFTDIRTY;
+const vm_flags_t RUST_CONST_HELPER_VM_MIXEDMAP = VM_MIXEDMAP;
+const vm_flags_t RUST_CONST_HELPER_VM_HUGEPAGE = VM_HUGEPAGE;
+const vm_flags_t RUST_CONST_HELPER_VM_NOHUGEPAGE = VM_NOHUGEPAGE;
+
+#if IS_ENABLED(CONFIG_ANDROID_BINDER_IPC_RUST)
+#include "../../drivers/android/binder/rust_binder.h"
+#include "../../drivers/android/binder/rust_binder_events.h"
+#include "../../drivers/android/binder/page_range_helper.h"
+#endif

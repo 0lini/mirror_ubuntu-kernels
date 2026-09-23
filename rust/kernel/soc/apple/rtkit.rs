@@ -6,11 +6,20 @@
 
 use crate::{
     alloc::flags::*,
-    bindings, device,
-    error::{code::*, from_err_ptr, from_result, to_result, Result},
-    prelude::KBox,
-    str::CStr,
-    types::{ForeignOwnable, ScopeGuard},
+    bindings,
+    device,
+    error::{
+        from_err_ptr,
+        from_result,
+        to_result, //
+    },
+    iosys_map::IoSysMapRef,
+    prelude::*,
+    str::CStrExt,
+    types::{
+        ForeignOwnable,
+        ScopeGuard, //
+    }, //
 };
 
 use core::marker::PhantomData;
@@ -27,7 +36,7 @@ pub trait Buffer {
 
     /// Returns a mutable byte slice of the buffer contents, or an
     /// error if unavailable.
-    fn buf(&mut self) -> Result<&mut [u8]>;
+    fn buf(&mut self) -> Result<IoSysMapRef<'_, u8>>;
 }
 
 /// Callback operations for an RTKit client.
@@ -148,14 +157,14 @@ unsafe extern "C" fn shmem_setup_callback<T: Operations>(
         };
 
         let iova = buf.iova()?;
-        let slice = buf.buf()?;
+        let iosys_map = buf.buf()?;
 
-        if slice.len() < bfr_mut.size {
+        if iosys_map.size() < bfr_mut.size {
             return Err(ENOMEM);
         }
 
         bfr_mut.iova = iova as u64;
-        bfr_mut.buffer = slice.as_mut_ptr() as *mut _;
+        bfr_mut.buffer = iosys_map.as_mut_ptr() as *mut _;
 
         // Now box the returned buffer type and stash it in the private pointer of the
         // `apple_rtkit_shmem` struct for safekeeping.
@@ -234,25 +243,25 @@ impl<T: Operations> RtKit<T> {
     }
 
     /// Boots (wakes up) the RTKit coprocessor.
-    pub fn wake(&mut self) -> Result {
+    pub fn wake(self: Pin<&mut Self>) -> Result {
         // SAFETY: `rtk` is valid per the type invariant.
         to_result(unsafe { bindings::apple_rtkit_wake(self.rtk) })
     }
 
     /// Waits for the RTKit coprocessor to finish booting.
-    pub fn boot(&mut self) -> Result {
+    pub fn boot(self: Pin<&mut Self>) -> Result {
         // SAFETY: `rtk` is valid per the type invariant.
         to_result(unsafe { bindings::apple_rtkit_boot(self.rtk) })
     }
 
     /// Starts a non-system endpoint.
-    pub fn start_endpoint(&mut self, endpoint: u8) -> Result {
+    pub fn start_endpoint(self: Pin<&mut Self>, endpoint: u8) -> Result {
         // SAFETY: `rtk` is valid per the type invariant.
         to_result(unsafe { bindings::apple_rtkit_start_ep(self.rtk, endpoint) })
     }
 
     /// Sends a message to a given endpoint.
-    pub fn send_message(&mut self, endpoint: u8, message: u64) -> Result {
+    pub fn send_message(self: Pin<&mut Self>, endpoint: u8, message: u64) -> Result {
         // SAFETY: `rtk` is valid per the type invariant.
         to_result(unsafe {
             bindings::apple_rtkit_send_message(self.rtk, endpoint, message, ptr::null_mut(), false)
@@ -260,7 +269,7 @@ impl<T: Operations> RtKit<T> {
     }
 
     /// Checks if an endpoint is present
-    pub fn has_endpoint(&self, endpoint: u8) -> bool {
+    pub fn has_endpoint(self: Pin<&mut Self>, endpoint: u8) -> bool {
         unsafe { bindings::apple_rtkit_has_endpoint(self.rtk, endpoint) }
     }
 }

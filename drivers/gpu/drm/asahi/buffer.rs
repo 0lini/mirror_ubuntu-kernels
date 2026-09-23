@@ -36,12 +36,25 @@ use crate::debug::*;
 use crate::fw::buffer;
 use crate::fw::types::*;
 use crate::util::*;
-use crate::{alloc, fw, gpu, hw, mmu, slotalloc};
+use crate::{
+    alloc,
+    fw,
+    gpu,
+    hw,
+    mmu,
+    slotalloc, //
+};
 use core::sync::atomic::Ordering;
 use kernel::new_mutex;
 use kernel::prelude::*;
-use kernel::sync::{Arc, Mutex};
-use kernel::{c_str, static_lock_class};
+use kernel::sync::{
+    Arc,
+    Mutex, //
+};
+use kernel::{
+    c_str,
+    static_lock_class, //
+};
 
 const DEBUG_CLASS: DebugFlags = DebugFlags::Buffer;
 
@@ -733,12 +746,12 @@ impl slotalloc::SlotItem for BufferSlotInner::ver {
     type Data = BufferManagerInner::ver;
 
     fn release(&mut self, data: &mut Self::Data, slot: u32) {
-        mod_pr_debug!("EventManager: Released slot {}\n", slot);
+        mod_pr_debug!("BufferManager: Released slot {}\n", slot);
         data.owners[slot as usize] = None;
     }
 }
 
-/// Inner data for the event manager, to be protected by the SlotAllocator lock.
+/// Inner data for the buffer manager, to be protected by the SlotAllocator lock.
 #[versions(AGX)]
 pub(crate) struct BufferManagerInner {
     owners: KVec<Option<Buffer::ver>>,

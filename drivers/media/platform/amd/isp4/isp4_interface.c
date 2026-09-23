@@ -3,9 +3,7 @@
  * Copyright (C) 2025 Advanced Micro Devices, Inc.
  */
 
-#include <drm/amd/isp.h>
 #include <linux/iopoll.h>
-#include <linux/mutex.h>
 
 #include "isp4_debug.h"
 #include "isp4_fw_cmd_resp.h"
@@ -13,10 +11,10 @@
 #include "isp4_interface.h"
 
 #define ISP4IF_FW_RESP_RB_IRQ_EN_MASK \
-	(ISP_SYS_INT0_EN__SYS_INT_RINGBUFFER_WPT9_EN_MASK |  \
-	 ISP_SYS_INT0_EN__SYS_INT_RINGBUFFER_WPT10_EN_MASK | \
-	 ISP_SYS_INT0_EN__SYS_INT_RINGBUFFER_WPT11_EN_MASK | \
-	 ISP_SYS_INT0_EN__SYS_INT_RINGBUFFER_WPT12_EN_MASK)
+	(ISP_SYS_INT0_EN__SYS_INT_RINGBUFFER_WPT9_EN_MASK\
+	 | ISP_SYS_INT0_EN__SYS_INT_RINGBUFFER_WPT12_EN_MASK)
+
+#define ISP4IF_FW_CMD_TIMEOUT (HZ / 2)
 
 struct isp4if_rb_config {
 	const char *name;
@@ -32,8 +30,7 @@ struct isp4if_rb_config {
 };
 
 /* FW cmd ring buffer configuration */
-static struct isp4if_rb_config
-	isp4if_cmd_rb_config[ISP4IF_STREAM_ID_MAX] = {
+static struct isp4if_rb_config isp4if_cmd_rb_config[ISP4IF_STREAM_ID_MAX] = {
 	{
 		.name = "CMD_RB_GBL0",
 		.index = 3,
@@ -73,8 +70,7 @@ static struct isp4if_rb_config
 };
 
 /* FW resp ring buffer configuration */
-static struct isp4if_rb_config
-	isp4if_resp_rb_config[ISP4IF_STREAM_ID_MAX] = {
+static struct isp4if_rb_config isp4if_resp_rb_config[ISP4IF_STREAM_ID_MAX] = {
 	{
 		.name = "RES_RB_GBL0",
 		.index = 3,
@@ -124,22 +120,22 @@ static struct isp4if_rb_config isp4if_log_rb_config = {
 	.reg_size = ISP_LOG_RB_SIZE0,
 };
 
-static struct isp4if_gpu_mem_info *isp4if_gpu_mem_alloc(struct isp4_interface *ispif, u32 mem_size)
+static struct isp4if_gpu_mem_info *
+isp4if_gpu_mem_alloc(struct isp4_interface *ispif, u32 mem_size)
 {
 	struct isp4if_gpu_mem_info *mem_info;
 	struct device *dev = ispif->dev;
 	int ret;
 
-	if (!mem_size)
-		return NULL;
-
-	mem_info = kzalloc(sizeof(*mem_info), GFP_KERNEL);
+	mem_info = kmalloc(sizeof(*mem_info), GFP_KERNEL);
 	if (!mem_info)
 		return NULL;
 
 	mem_info->mem_size = mem_size;
-	ret = isp_kernel_buffer_alloc(dev, mem_info->mem_size, &mem_info->mem_handle,
-				      &mem_info->gpu_mc_addr, &mem_info->sys_addr);
+	ret = isp_kernel_buffer_alloc(dev, mem_info->mem_size,
+				      &mem_info->mem_handle,
+				      &mem_info->gpu_mc_addr,
+				      &mem_info->sys_addr);
 	if (ret) {
 		kfree(mem_info);
 		return NULL;
@@ -148,57 +144,39 @@ static struct isp4if_gpu_mem_info *isp4if_gpu_mem_alloc(struct isp4_interface *i
 	return mem_info;
 }
 
-static int isp4if_gpu_mem_free(struct isp4_interface *ispif, struct isp4if_gpu_mem_info *mem_info)
+static void isp4if_gpu_mem_free(struct isp4_interface *ispif,
+				struct isp4if_gpu_mem_info **mem_info_ptr)
 {
+	struct isp4if_gpu_mem_info *mem_info = *mem_info_ptr;
 	struct device *dev = ispif->dev;
 
 	if (!mem_info) {
 		dev_err(dev, "invalid mem_info\n");
-		return -EINVAL;
+		return;
 	}
 
-	isp_kernel_buffer_free(&mem_info->mem_handle, &mem_info->gpu_mc_addr, &mem_info->sys_addr);
-
+	*mem_info_ptr = NULL;
+	isp_kernel_buffer_free(&mem_info->mem_handle, &mem_info->gpu_mc_addr,
+			       &mem_info->sys_addr);
 	kfree(mem_info);
-
-	return 0;
 }
 
-static int isp4if_dealloc_fw_gpumem(struct isp4_interface *ispif)
+static void isp4if_dealloc_fw_gpumem(struct isp4_interface *ispif)
 {
-	int i;
+	isp4if_gpu_mem_free(ispif, &ispif->fw_mem_pool);
+	isp4if_gpu_mem_free(ispif, &ispif->fw_cmd_resp_buf);
+	isp4if_gpu_mem_free(ispif, &ispif->fw_log_buf);
 
-	if (ispif->fw_mem_pool) {
-		isp4if_gpu_mem_free(ispif, ispif->fw_mem_pool);
-		ispif->fw_mem_pool = NULL;
-	}
-
-	if (ispif->fw_cmd_resp_buf) {
-		isp4if_gpu_mem_free(ispif, ispif->fw_cmd_resp_buf);
-		ispif->fw_cmd_resp_buf = NULL;
-	}
-
-	if (ispif->fw_log_buf) {
-		isp4if_gpu_mem_free(ispif, ispif->fw_log_buf);
-		ispif->fw_log_buf = NULL;
-	}
-
-	for (i = 0; i < ISP4IF_MAX_STREAM_BUF_COUNT; i++) {
-		if (ispif->metainfo_buf_pool[i]) {
-			isp4if_gpu_mem_free(ispif, ispif->metainfo_buf_pool[i]);
-			ispif->metainfo_buf_pool[i] = NULL;
-		}
-	}
-
-	return 0;
+	for (unsigned int i = 0; i < ISP4IF_MAX_STREAM_BUF_COUNT; i++)
+		isp4if_gpu_mem_free(ispif, &ispif->meta_info_buf[i]);
 }
 
 static int isp4if_alloc_fw_gpumem(struct isp4_interface *ispif)
 {
 	struct device *dev = ispif->dev;
-	unsigned int i;
 
-	ispif->fw_mem_pool = isp4if_gpu_mem_alloc(ispif, FW_MEMORY_POOL_SIZE);
+	ispif->fw_mem_pool = isp4if_gpu_mem_alloc(ispif,
+						  ISP4FW_MEMORY_POOL_SIZE);
 	if (!ispif->fw_mem_pool)
 		goto error_no_memory;
 
@@ -212,11 +190,10 @@ static int isp4if_alloc_fw_gpumem(struct isp4_interface *ispif)
 	if (!ispif->fw_log_buf)
 		goto error_no_memory;
 
-	for (i = 0; i < ISP4IF_MAX_STREAM_BUF_COUNT; i++) {
-		ispif->metainfo_buf_pool[i] =
-			isp4if_gpu_mem_alloc(ispif,
-					     ISP4IF_META_INFO_BUF_SIZE);
-		if (!ispif->metainfo_buf_pool[i])
+	for (unsigned int i = 0; i < ISP4IF_MAX_STREAM_BUF_COUNT; i++) {
+		ispif->meta_info_buf[i] =
+			isp4if_gpu_mem_alloc(ispif, ISP4IF_META_INFO_BUF_SIZE);
+		if (!ispif->meta_info_buf[i])
 			goto error_no_memory;
 	}
 
@@ -227,18 +204,18 @@ error_no_memory:
 	return -ENOMEM;
 }
 
-static u32 isp4if_compute_check_sum(u8 *buf, u32 buf_size)
+static u32 isp4if_compute_check_sum(const void *buf, size_t buf_size)
 {
+	const u8 *surplus_ptr;
+	const u32 *buffer;
 	u32 checksum = 0;
-	u8 *surplus_ptr;
-	u32 *buffer;
-	u32 i;
+	size_t i;
 
-	buffer = (u32 *)buf;
+	buffer = (const u32 *)buf;
 	for (i = 0; i < buf_size / sizeof(u32); i++)
 		checksum += buffer[i];
 
-	surplus_ptr = (u8 *)&buffer[i];
+	surplus_ptr = (const u8 *)&buffer[i];
 	/* add surplus data crc checksum */
 	for (i = 0; i < buf_size % sizeof(u32); i++)
 		checksum += surplus_ptr[i];
@@ -248,168 +225,104 @@ static u32 isp4if_compute_check_sum(u8 *buf, u32 buf_size)
 
 void isp4if_clear_cmdq(struct isp4_interface *ispif)
 {
-	struct isp4if_cmd_element *buf_node = NULL;
-	struct isp4if_cmd_element *tmp_node = NULL;
+	struct isp4if_cmd_element *buf_node, *tmp_node;
+	LIST_HEAD(free_list);
 
-	guard(mutex)(&ispif->cmdq_mutex);
+	scoped_guard(spinlock, &ispif->cmdq_lock)
+		list_splice_init(&ispif->cmdq, &free_list);
 
-	list_for_each_entry_safe(buf_node, tmp_node, &ispif->cmdq, list) {
-		list_del(&buf_node->list);
+	list_for_each_entry_safe(buf_node, tmp_node, &free_list, list)
 		kfree(buf_node);
-	}
 }
 
-static bool isp4if_is_cmdq_rb_full(struct isp4_interface *ispif, enum isp4if_stream_id cmd_buf_idx)
+static bool isp4if_is_cmdq_rb_full(struct isp4_interface *ispif,
+				   enum isp4if_stream_id stream)
 {
-	struct isp4if_rb_config *rb_config;
+	struct isp4if_rb_config *rb_config = &isp4if_cmd_rb_config[stream];
+	u32 rreg = rb_config->reg_rptr, wreg = rb_config->reg_wptr;
+	u32 len = rb_config->val_size;
 	u32 rd_ptr, wr_ptr;
-	u32 new_wr_ptr;
-	u32 rreg;
-	u32 wreg;
-	u32 len;
-
-	rb_config = &isp4if_cmd_rb_config[cmd_buf_idx];
-	rreg = rb_config->reg_rptr;
-	wreg = rb_config->reg_wptr;
-	len = rb_config->val_size;
+	u32 bytes_free;
 
 	rd_ptr = isp4hw_rreg(ispif->mmio, rreg);
 	wr_ptr = isp4hw_rreg(ispif->mmio, wreg);
 
-	new_wr_ptr = wr_ptr + sizeof(struct isp4fw_cmd);
-
-	if (wr_ptr >= rd_ptr) {
-		if (new_wr_ptr < len) {
-			return false;
-		} else if (new_wr_ptr == len) {
-			if (rd_ptr == 0)
-				return true;
-
-			return false;
-		}
-
-		new_wr_ptr -= len;
-		if (new_wr_ptr < rd_ptr)
-			return false;
-
-		return true;
-	}
-
-	if (new_wr_ptr < rd_ptr)
+	/*
+	 * Read and write pointers are equal, indicating the ring buffer
+	 * is empty
+	 */
+	if (wr_ptr == rd_ptr)
 		return false;
 
-	return true;
+	if (wr_ptr > rd_ptr)
+		bytes_free = len - (wr_ptr - rd_ptr);
+	else
+		bytes_free = rd_ptr - wr_ptr;
+
+	/*
+	 * Ignore one byte from the bytes free to prevent rd_ptr from equaling
+	 * wr_ptr when the ring buffer is full, because rd_ptr == wr_ptr is
+	 * supposed to indicate that the ring buffer is empty.
+	 */
+	return bytes_free <= sizeof(struct isp4fw_cmd);
 }
 
-static struct isp4if_cmd_element *isp4if_append_cmd_2_cmdq(struct isp4_interface *ispif,
-							   struct isp4if_cmd_element *cmd_ele)
+struct isp4if_cmd_element *isp4if_rm_cmd_from_cmdq(struct isp4_interface *ispif,
+						   u32 seq_num, u32 cmd_id)
 {
-	struct isp4if_cmd_element *copy_command = NULL;
+	struct isp4if_cmd_element *ele;
 
-	copy_command = kmemdup(cmd_ele, sizeof(*cmd_ele), GFP_KERNEL);
-	if (!copy_command)
-		return NULL;
+	guard(spinlock)(&ispif->cmdq_lock);
 
-	guard(mutex)(&ispif->cmdq_mutex);
-
-	list_add_tail(&copy_command->list, &ispif->cmdq);
-
-	return copy_command;
-}
-
-struct isp4if_cmd_element *isp4if_rm_cmd_from_cmdq(struct isp4_interface *ispif, u32 seq_num,
-						   u32 cmd_id)
-{
-	struct isp4if_cmd_element *buf_node = NULL;
-	struct isp4if_cmd_element *tmp_node = NULL;
-
-	guard(mutex)(&ispif->cmdq_mutex);
-
-	list_for_each_entry_safe(buf_node, tmp_node, &ispif->cmdq, list) {
-		if (buf_node->seq_num == seq_num &&
-		    buf_node->cmd_id == cmd_id) {
-			list_del(&buf_node->list);
-			return buf_node;
+	list_for_each_entry(ele, &ispif->cmdq, list) {
+		if (ele->seq_num == seq_num && ele->cmd_id == cmd_id) {
+			list_del(&ele->list);
+			return ele;
 		}
 	}
 
 	return NULL;
 }
 
-static int isp4if_insert_isp_fw_cmd(struct isp4_interface *ispif, enum isp4if_stream_id stream,
-				    struct isp4fw_cmd *cmd)
+/* Must check that isp4if_is_cmdq_rb_full() == false before calling */
+static int isp4if_insert_isp_fw_cmd(struct isp4_interface *ispif,
+				    enum isp4if_stream_id stream,
+				    const struct isp4fw_cmd *cmd)
 {
-	struct isp4if_rb_config *rb_config;
+	struct isp4if_rb_config *rb_config = &isp4if_cmd_rb_config[stream];
+	u32 rreg = rb_config->reg_rptr, wreg = rb_config->reg_wptr;
+	void *mem_sys = rb_config->base_sys_addr;
+	const u32 cmd_sz = sizeof(*cmd);
 	struct device *dev = ispif->dev;
-	u64 mem_addr;
-	u64 mem_sys;
-	u32 wr_ptr;
-	u32 rd_ptr;
-	u32 rreg;
-	u32 wreg;
-	u32 len;
+	u32 len = rb_config->val_size;
+	const void *src = cmd;
+	u32 rd_ptr, wr_ptr;
+	u32 bytes_to_end;
 
-	rb_config = &isp4if_cmd_rb_config[stream];
-	rreg = rb_config->reg_rptr;
-	wreg = rb_config->reg_wptr;
-	mem_sys = (u64)rb_config->base_sys_addr;
-	mem_addr = rb_config->base_mc_addr;
-	len = rb_config->val_size;
-
-	if (isp4if_is_cmdq_rb_full(ispif, stream)) {
-		dev_err(dev, "fail no cmdslot %s(%d)\n",
-			isp4dbg_get_if_stream_str(stream), stream);
-		return -EINVAL;
-	}
-
-	wr_ptr = isp4hw_rreg(ispif->mmio, wreg);
 	rd_ptr = isp4hw_rreg(ispif->mmio, rreg);
-
-	if (rd_ptr > len) {
-		dev_err(dev, "fail %s(%u),rd_ptr %u(should<=%u),wr_ptr %u\n",
-			isp4dbg_get_if_stream_str(stream),
-			stream, rd_ptr, len, wr_ptr);
+	wr_ptr = isp4hw_rreg(ispif->mmio, wreg);
+	if (rd_ptr >= len || wr_ptr >= len) {
+		dev_err(dev,
+			"rb invalid: stream=%u(%s), rd=%u, wr=%u, len=%u, cmd_sz=%u\n",
+			stream, isp4dbg_get_if_stream_str(stream), rd_ptr,
+			wr_ptr, len, cmd_sz);
 		return -EINVAL;
 	}
 
-	if (wr_ptr > len) {
-		dev_err(dev, "fail %s(%u),wr_ptr %u(should<=%u), rd_ptr %u\n",
-			isp4dbg_get_if_stream_str(stream),
-			stream, wr_ptr, len, rd_ptr);
-		return -EINVAL;
-	}
-
-	if (wr_ptr < rd_ptr) {
-		mem_addr += wr_ptr;
-
-		memcpy((u8 *)(mem_sys + wr_ptr),
-		       (u8 *)cmd, sizeof(struct isp4fw_cmd));
+	bytes_to_end = len - wr_ptr;
+	if (bytes_to_end >= cmd_sz) {
+		/* FW cmd is just a straight copy to the write pointer */
+		memcpy(mem_sys + wr_ptr, src, cmd_sz);
+		isp4hw_wreg(ispif->mmio, wreg, (wr_ptr + cmd_sz) % len);
 	} else {
-		if ((len - wr_ptr) >= (sizeof(struct isp4fw_cmd))) {
-			mem_addr += wr_ptr;
-
-			memcpy((u8 *)(mem_sys + wr_ptr),
-			       (u8 *)cmd, sizeof(struct isp4fw_cmd));
-		} else {
-			u32 size;
-			u8 *src;
-
-			src = (u8 *)cmd;
-			size = len - wr_ptr;
-
-			memcpy((u8 *)(mem_sys + wr_ptr), src, size);
-
-			src += size;
-			size = sizeof(struct isp4fw_cmd) - size;
-			memcpy((u8 *)(mem_sys), src, size);
-		}
+		/*
+		 * FW cmd is split because the ring buffer needs to wrap
+		 * around
+		 */
+		memcpy(mem_sys + wr_ptr, src, bytes_to_end);
+		memcpy(mem_sys, src + bytes_to_end, cmd_sz - bytes_to_end);
+		isp4hw_wreg(ispif->mmio, wreg, cmd_sz - bytes_to_end);
 	}
-
-	wr_ptr += sizeof(struct isp4fw_cmd);
-	if (wr_ptr >= len)
-		wr_ptr -= len;
-
-	isp4hw_wreg(ispif->mmio, wreg, wr_ptr);
 
 	return 0;
 }
@@ -419,113 +332,150 @@ static inline enum isp4if_stream_id isp4if_get_fw_stream(u32 cmd_id)
 	return ISP4IF_STREAM_ID_1;
 }
 
-static int isp4if_send_fw_cmd(struct isp4_interface *ispif, u32 cmd_id, void *package,
-			      u32 package_size, wait_queue_head_t *wq, u32 *wq_cond, u32 *seq)
+static int isp4if_send_fw_cmd(struct isp4_interface *ispif, u32 cmd_id,
+			      const void *package,
+			      u32 package_size, bool sync)
 {
 	enum isp4if_stream_id stream = isp4if_get_fw_stream(cmd_id);
-	struct isp4if_cmd_element command_element = {};
-	struct isp4if_gpu_mem_info *gpu_mem = NULL;
-	struct isp4if_cmd_element *cmd_ele = NULL;
-	struct isp4if_rb_config *rb_config;
+	struct isp4if_cmd_element *ele = NULL;
 	struct device *dev = ispif->dev;
-	struct isp4fw_cmd cmd = {};
-	u64 package_base = 0;
+	struct isp4fw_cmd cmd;
 	u32 seq_num;
-	u32 rreg;
-	u32 wreg;
 	int ret;
 
 	if (package_size > sizeof(cmd.cmd_param)) {
-		dev_err(dev, "fail pkgsize(%u)>%lu cmd:0x%x,stream %d\n",
+		dev_err(dev, "fail pkgsize(%u) > %zu cmd:0x%x, stream %d\n",
 			package_size, sizeof(cmd.cmd_param), cmd_id, stream);
 		return -EINVAL;
 	}
 
-	rb_config = &isp4if_resp_rb_config[stream];
-	rreg = rb_config->reg_rptr;
-	wreg = rb_config->reg_wptr;
-
-	guard(mutex)(&ispif->isp4if_mutex);
-
-	ret = read_poll_timeout(isp4if_is_cmdq_rb_full, ret, !ret, ISP4IF_MAX_SLEEP_TIME * 1000,
-				ISP4IF_MAX_SLEEP_COUNT * ISP4IF_MAX_SLEEP_TIME * 1000, false,
-				ispif, stream);
-
-	if (ret) {
-		u32 rd_ptr = isp4hw_rreg(ispif->mmio, rreg);
-		u32 wr_ptr = isp4hw_rreg(ispif->mmio, wreg);
-
-		dev_err(dev,
-			"failed to get free cmdq slot, stream %s(%d),rd %u, wr %u\n",
-			isp4dbg_get_if_stream_str(stream),
-			stream, rd_ptr, wr_ptr);
-		return -ETIMEDOUT;
-	}
-
+	/*
+	 * The struct will be shared with ISP FW, use memset() to guarantee
+	 * padding bits are zeroed, since this is not guaranteed on all
+	 * compilers.
+	 */
+	memset(&cmd, 0, sizeof(cmd));
 	cmd.cmd_id = cmd_id;
 	switch (stream) {
 	case ISP4IF_STREAM_ID_GLOBAL:
-		cmd.cmd_stream_id = STREAM_ID_INVALID;
+		cmd.cmd_stream_id = ISP4FW_STREAM_ID_INVALID;
 		break;
 	case ISP4IF_STREAM_ID_1:
-		cmd.cmd_stream_id = STREAM_ID_1;
+		cmd.cmd_stream_id = ISP4FW_STREAM_ID_1;
 		break;
 	default:
 		dev_err(dev, "fail bad stream id %d\n", stream);
 		return -EINVAL;
 	}
 
+	/* Allocate the sync command object early and outside of the lock */
+	if (sync) {
+		ele = kmalloc(sizeof(*ele), GFP_KERNEL);
+		if (!ele)
+			return -ENOMEM;
+
+		/* Get two references: one for the resp thread, one for us */
+		atomic_set(&ele->refcnt, 2);
+		init_completion(&ele->cmd_done);
+	}
+
 	if (package && package_size)
 		memcpy(cmd.cmd_param, package, package_size);
 
-	seq_num = ispif->host2fw_seq_num++;
-	cmd.cmd_seq_num = seq_num;
-	cmd.cmd_check_sum =
-		isp4if_compute_check_sum((u8 *)&cmd, sizeof(cmd) - 4);
+	scoped_guard(mutex, &ispif->isp4if_mutex) {
+		ret = read_poll_timeout(isp4if_is_cmdq_rb_full, ret, !ret,
+					ISP4IF_RB_FULL_SLEEP_US,
+					ISP4IF_RB_FULL_TIMEOUT_US, false, ispif,
+					stream);
+		if (ret) {
+			struct isp4if_rb_config *rb_config =
+					&isp4if_resp_rb_config[stream];
+			u32 rd_ptr = isp4hw_rreg(ispif->mmio,
+						 rb_config->reg_rptr);
+			u32 wr_ptr = isp4hw_rreg(ispif->mmio,
+						 rb_config->reg_wptr);
 
-	if (seq)
-		*seq = seq_num;
-	command_element.seq_num = seq_num;
-	command_element.cmd_id = cmd_id;
-	command_element.mc_addr = package_base;
-	command_element.wq = wq;
-	command_element.wq_cond = wq_cond;
-	command_element.gpu_pkg = gpu_mem;
-	command_element.stream = stream;
+			dev_err(dev,
+				"failed to get free cmdq slot, stream %s(%d),rd %u, wr %u\n",
+				isp4dbg_get_if_stream_str(stream), stream,
+				rd_ptr, wr_ptr);
+			ret = -ETIMEDOUT;
+			goto free_ele;
+		}
+
+		seq_num = ispif->host2fw_seq_num++;
+		cmd.cmd_seq_num = seq_num;
+		cmd.cmd_check_sum = isp4if_compute_check_sum(&cmd, sizeof(cmd)
+							     - sizeof(u32));
+
+		/*
+		 * only append the fw cmd to queue when its response needs to
+		 * be waited for, currently there are only two such commands,
+		 * disable channel and stop stream which are only sent after
+		 * close camera
+		 */
+		if (ele) {
+			ele->seq_num = seq_num;
+			ele->cmd_id = cmd_id;
+			scoped_guard(spinlock, &ispif->cmdq_lock)
+				list_add_tail(&ele->list, &ispif->cmdq);
+		}
+
+		ret = isp4if_insert_isp_fw_cmd(ispif, stream, &cmd);
+		if (ret) {
+			dev_err(dev,
+				"fail for insert_isp_fw_cmd cmd_id %s(0x%08x)\n",
+				isp4dbg_get_cmd_str(cmd_id), cmd_id);
+			goto err_dequeue_ele;
+		}
+	}
+
+	if (ele) {
+		ret = wait_for_completion_timeout(&ele->cmd_done,
+						  ISP4IF_FW_CMD_TIMEOUT);
+		if (!ret) {
+			ret = -ETIMEDOUT;
+			goto err_dequeue_ele;
+		}
+
+		ret = 0;
+		goto put_ele_ref;
+	}
+
+	return 0;
+
+err_dequeue_ele:
 	/*
-	 * only append the fw cmd to queue when its response needs to be waited for,
-	 * currently there are only two such commands, disable channel and stop stream
-	 * which are only sent after close camera
+	 * Try to remove the command from the queue. If that fails, then it
+	 * means the response thread is currently using the object, and we need
+	 * to use the refcount to avoid a use-after-free by either side.
 	 */
-	if (wq && wq_cond) {
-		cmd_ele = isp4if_append_cmd_2_cmdq(ispif, &command_element);
-		if (!cmd_ele) {
-			dev_err(dev, "fail for isp_append_cmd_2_cmdq\n");
-			return -ENOMEM;
-		}
-	}
+	if (ele && isp4if_rm_cmd_from_cmdq(ispif, seq_num, cmd_id))
+		goto free_ele;
 
-	ret = isp4if_insert_isp_fw_cmd(ispif, stream, &cmd);
-	if (ret) {
-		dev_err(dev, "fail for insert_isp_fw_cmd camId %s(0x%08x)\n",
-			isp4dbg_get_cmd_str(cmd_id), cmd_id);
-		if (cmd_ele) {
-			isp4if_rm_cmd_from_cmdq(ispif, cmd_ele->seq_num,
-						cmd_ele->cmd_id);
-			kfree(cmd_ele);
-		}
-	}
+put_ele_ref:
+	/* Don't free the command if we didn't put the last reference */
+	if (ele && atomic_dec_return(&ele->refcnt))
+		ele = NULL;
 
+free_ele:
+	kfree(ele);
 	return ret;
 }
 
-static int isp4if_send_buffer(struct isp4_interface *ispif, struct isp4if_img_buf_info *buf_info)
+static int isp4if_send_buffer(struct isp4_interface *ispif,
+			      struct isp4if_img_buf_info *buf_info)
 {
-	struct isp4fw_cmd_send_buffer cmd = {};
+	struct isp4fw_cmd_send_buffer cmd;
 
-	cmd.buffer_type = BUFFER_TYPE_PREVIEW;
-	cmd.buffer.vmid_space.bit.vmid = 0;
-	cmd.buffer.vmid_space.bit.space = ADDR_SPACE_TYPE_GPU_VA;
+	/*
+	 * The struct will be shared with ISP FW, use memset() to guarantee
+	 * padding bits are zeroed, since this is not guaranteed on all
+	 * compilers.
+	 */
+	memset(&cmd, 0, sizeof(cmd));
+	cmd.buffer_type = ISP4FW_BUFFER_TYPE_PREVIEW;
+	cmd.buffer.vmid_space.bit.space = ISP4FW_ADDR_SPACE_TYPE_GPU_VA;
 	isp4if_split_addr64(buf_info->planes[0].mc_addr,
 			    &cmd.buffer.buf_base_a_lo,
 			    &cmd.buffer.buf_base_a_hi);
@@ -541,44 +491,37 @@ static int isp4if_send_buffer(struct isp4_interface *ispif, struct isp4if_img_bu
 			    &cmd.buffer.buf_base_c_hi);
 	cmd.buffer.buf_size_c = buf_info->planes[2].len;
 
-	return isp4if_send_fw_cmd(ispif, CMD_ID_SEND_BUFFER, &cmd,
-				  sizeof(cmd), NULL, NULL, NULL);
+	return isp4if_send_fw_cmd(ispif, ISP4FW_CMD_ID_SEND_BUFFER, &cmd,
+				  sizeof(cmd), false);
 }
 
-static void isp4if_init_rb_config(struct isp4_interface *ispif, struct isp4if_rb_config *rb_config)
+static void isp4if_init_rb_config(struct isp4_interface *ispif,
+				  struct isp4if_rb_config *rb_config)
 {
-	u32 lo;
-	u32 hi;
-
-	isp4if_split_addr64(rb_config->base_mc_addr, &lo, &hi);
-
-	isp4hw_wreg(GET_ISP4IF_REG_BASE(ispif),
-		    rb_config->reg_rptr, 0x0);
-	isp4hw_wreg(GET_ISP4IF_REG_BASE(ispif),
-		    rb_config->reg_wptr, 0x0);
-	isp4hw_wreg(GET_ISP4IF_REG_BASE(ispif),
-		    rb_config->reg_base_lo, lo);
-	isp4hw_wreg(GET_ISP4IF_REG_BASE(ispif),
-		    rb_config->reg_base_hi, hi);
-	isp4hw_wreg(GET_ISP4IF_REG_BASE(ispif),
-		    rb_config->reg_size, rb_config->val_size);
+	isp4hw_wreg(ispif->mmio, rb_config->reg_rptr, 0x0);
+	isp4hw_wreg(ispif->mmio, rb_config->reg_wptr, 0x0);
+	isp4hw_wreg(ispif->mmio, rb_config->reg_base_lo,
+		    rb_config->base_mc_addr);
+	isp4hw_wreg(ispif->mmio, rb_config->reg_base_hi,
+		    rb_config->base_mc_addr >> 32);
+	isp4hw_wreg(ispif->mmio, rb_config->reg_size, rb_config->val_size);
 }
 
 static int isp4if_fw_init(struct isp4_interface *ispif)
 {
+	u32 aligned_rb_chunk_size = ISP4IF_RB_PMBMAP_MEM_CHUNK & 0xffffffc0;
 	struct isp4if_rb_config *rb_config;
 	u32 offset;
-	int i;
+	unsigned int i;
 
 	/* initialize CMD_RB streams */
 	for (i = 0; i < ISP4IF_STREAM_ID_MAX; i++) {
 		rb_config = (isp4if_cmd_rb_config + i);
-		offset = ispif->aligned_rb_chunk_size *
-			 (rb_config->index + ispif->cmd_rb_base_index);
+		offset = aligned_rb_chunk_size * rb_config->index;
 
 		rb_config->val_size = ISP4IF_FW_CMD_BUF_SIZE;
 		rb_config->base_sys_addr =
-			(u8 *)ispif->fw_cmd_resp_buf->sys_addr + offset;
+			ispif->fw_cmd_resp_buf->sys_addr + offset;
 		rb_config->base_mc_addr =
 			ispif->fw_cmd_resp_buf->gpu_mc_addr + offset;
 
@@ -588,12 +531,12 @@ static int isp4if_fw_init(struct isp4_interface *ispif)
 	/* initialize RESP_RB streams */
 	for (i = 0; i < ISP4IF_STREAM_ID_MAX; i++) {
 		rb_config = (isp4if_resp_rb_config + i);
-		offset = ispif->aligned_rb_chunk_size *
-			 (rb_config->index + ispif->resp_rb_base_index);
+		offset = aligned_rb_chunk_size *
+			 (rb_config->index + ISP4IF_RESP_CHAN_TO_RB_OFFSET - 1);
 
 		rb_config->val_size = ISP4IF_FW_CMD_BUF_SIZE;
 		rb_config->base_sys_addr =
-			(u8 *)ispif->fw_cmd_resp_buf->sys_addr + offset;
+			ispif->fw_cmd_resp_buf->sys_addr + offset;
 		rb_config->base_mc_addr =
 			ispif->fw_cmd_resp_buf->gpu_mc_addr + offset;
 
@@ -611,7 +554,8 @@ static int isp4if_fw_init(struct isp4_interface *ispif)
 	return 0;
 }
 
-static int isp4if_wait_fw_ready(struct isp4_interface *ispif, u32 isp_status_addr)
+static int isp4if_wait_fw_ready(struct isp4_interface *ispif,
+				u32 isp_status_addr)
 {
 	struct device *dev = ispif->dev;
 	u32 timeout_ms = 100;
@@ -619,9 +563,10 @@ static int isp4if_wait_fw_ready(struct isp4_interface *ispif, u32 isp_status_add
 	u32 reg_val;
 
 	/* wait for FW initialize done! */
-	if (!read_poll_timeout(isp4hw_rreg, reg_val, reg_val & ISP_STATUS__CCPU_REPORT_MASK,
+	if (!read_poll_timeout(isp4hw_rreg, reg_val, reg_val
+			       & ISP_STATUS__CCPU_REPORT_MASK,
 			       interval_ms * 1000, timeout_ms * 1000, false,
-			       GET_ISP4IF_REG_BASE(ispif), isp_status_addr))
+			       ispif->mmio, isp_status_addr))
 		return 0;
 
 	dev_err(dev, "ISP CCPU FW boot failed\n");
@@ -633,30 +578,30 @@ static void isp4if_enable_ccpu(struct isp4_interface *ispif)
 {
 	u32 reg_val;
 
-	reg_val = isp4hw_rreg(GET_ISP4IF_REG_BASE(ispif), ISP_SOFT_RESET);
+	reg_val = isp4hw_rreg(ispif->mmio, ISP_SOFT_RESET);
 	reg_val &= (~ISP_SOFT_RESET__CCPU_SOFT_RESET_MASK);
-	isp4hw_wreg(GET_ISP4IF_REG_BASE(ispif), ISP_SOFT_RESET, reg_val);
+	isp4hw_wreg(ispif->mmio, ISP_SOFT_RESET, reg_val);
 
 	usleep_range(100, 150);
 
-	reg_val = isp4hw_rreg(GET_ISP4IF_REG_BASE(ispif), ISP_CCPU_CNTL);
+	reg_val = isp4hw_rreg(ispif->mmio, ISP_CCPU_CNTL);
 	reg_val &= (~ISP_CCPU_CNTL__CCPU_HOST_SOFT_RST_MASK);
-	isp4hw_wreg(GET_ISP4IF_REG_BASE(ispif), ISP_CCPU_CNTL, reg_val);
+	isp4hw_wreg(ispif->mmio, ISP_CCPU_CNTL, reg_val);
 }
 
 static void isp4if_disable_ccpu(struct isp4_interface *ispif)
 {
 	u32 reg_val;
 
-	reg_val = isp4hw_rreg(GET_ISP4IF_REG_BASE(ispif), ISP_CCPU_CNTL);
+	reg_val = isp4hw_rreg(ispif->mmio, ISP_CCPU_CNTL);
 	reg_val |= ISP_CCPU_CNTL__CCPU_HOST_SOFT_RST_MASK;
-	isp4hw_wreg(GET_ISP4IF_REG_BASE(ispif), ISP_CCPU_CNTL, reg_val);
+	isp4hw_wreg(ispif->mmio, ISP_CCPU_CNTL, reg_val);
 
 	usleep_range(100, 150);
 
-	reg_val = isp4hw_rreg(GET_ISP4IF_REG_BASE(ispif), ISP_SOFT_RESET);
+	reg_val = isp4hw_rreg(ispif->mmio, ISP_SOFT_RESET);
 	reg_val |= ISP_SOFT_RESET__CCPU_SOFT_RESET_MASK;
-	isp4hw_wreg(GET_ISP4IF_REG_BASE(ispif), ISP_SOFT_RESET, reg_val);
+	isp4hw_wreg(ispif->mmio, ISP_SOFT_RESET, reg_val);
 }
 
 static int isp4if_fw_boot(struct isp4_interface *ispif)
@@ -673,7 +618,7 @@ static int isp4if_fw_boot(struct isp4_interface *ispif)
 	isp4if_fw_init(ispif);
 
 	/* clear ccpu status */
-	isp4hw_wreg(GET_ISP4IF_REG_BASE(ispif), ISP_STATUS, 0x0);
+	isp4hw_wreg(ispif->mmio, ISP_STATUS, 0x0);
 
 	isp4if_enable_ccpu(ispif);
 
@@ -683,7 +628,7 @@ static int isp4if_fw_boot(struct isp4_interface *ispif)
 	}
 
 	/* enable interrupts */
-	isp4hw_wreg(GET_ISP4IF_REG_BASE(ispif), ISP_SYS_INT0_EN,
+	isp4hw_wreg(ispif->mmio, ISP_SYS_INT0_EN,
 		    ISP4IF_FW_RESP_RB_IRQ_EN_MASK);
 
 	ispif->status = ISP4IF_STATUS_FW_RUNNING;
@@ -693,178 +638,96 @@ static int isp4if_fw_boot(struct isp4_interface *ispif)
 	return 0;
 }
 
-int isp4if_f2h_resp(struct isp4_interface *ispif, enum isp4if_stream_id stream, void *resp)
+int isp4if_f2h_resp(struct isp4_interface *ispif, enum isp4if_stream_id stream,
+		    struct isp4fw_resp *resp)
 {
-	struct isp4fw_resp *response = resp;
-	struct isp4if_rb_config *rb_config;
+	struct isp4if_rb_config *rb_config = &isp4if_resp_rb_config[stream];
+	u32 rreg = rb_config->reg_rptr, wreg = rb_config->reg_wptr;
+	void *mem_sys = rb_config->base_sys_addr;
+	const u32 resp_sz = sizeof(*resp);
 	struct device *dev = ispif->dev;
-	u32 rd_ptr_dbg;
-	u32 wr_ptr_dbg;
-	void *mem_sys;
-	u64 mem_addr;
+	u32 len = rb_config->val_size;
+	u32 rd_ptr, wr_ptr;
+	u32 bytes_to_end;
+	void *dst = resp;
 	u32 checksum;
-	u32 rd_ptr;
-	u32 wr_ptr;
-	u32 rreg;
-	u32 wreg;
-	u32 len;
 
-	rb_config = &isp4if_resp_rb_config[stream];
-	rreg = rb_config->reg_rptr;
-	wreg = rb_config->reg_wptr;
-	mem_sys = rb_config->base_sys_addr;
-	mem_addr = rb_config->base_mc_addr;
-	len = rb_config->val_size;
+	rd_ptr = isp4hw_rreg(ispif->mmio, rreg);
+	wr_ptr = isp4hw_rreg(ispif->mmio, wreg);
+	if (rd_ptr >= len || wr_ptr >= len)
+		goto err_rb_invalid;
 
-	rd_ptr = isp4hw_rreg(GET_ISP4IF_REG_BASE(ispif), rreg);
-	wr_ptr = isp4hw_rreg(GET_ISP4IF_REG_BASE(ispif), wreg);
-	rd_ptr_dbg = rd_ptr;
-	wr_ptr_dbg = wr_ptr;
+	/*
+	 * Read and write pointers are equal, indicating the ring buffer is
+	 * empty
+	 */
+	if (rd_ptr == wr_ptr)
+		return -ENODATA;
 
-	if (rd_ptr > len) {
-		dev_err(dev, "fail %s(%u),rd_ptr %u(should<=%u),wr_ptr %u\n",
-			isp4dbg_get_if_stream_str(stream),
-			stream, rd_ptr, len, wr_ptr);
-		return -EINVAL;
-	}
+	bytes_to_end = len - rd_ptr;
+	if (bytes_to_end >= resp_sz) {
+		/* FW response is just a straight copy from the read pointer */
+		if (wr_ptr > rd_ptr && wr_ptr - rd_ptr < resp_sz)
+			goto err_rb_invalid;
 
-	if (wr_ptr > len) {
-		dev_err(dev, "fail %s(%u),wr_ptr %u(should<=%u), rd_ptr %u\n",
-			isp4dbg_get_if_stream_str(stream),
-			stream, wr_ptr, len, rd_ptr);
-		return -EINVAL;
-	}
-
-	if (rd_ptr < wr_ptr) {
-		if ((wr_ptr - rd_ptr) >= (sizeof(struct isp4fw_resp))) {
-			memcpy((u8 *)response, (u8 *)mem_sys + rd_ptr,
-			       sizeof(struct isp4fw_resp));
-
-			rd_ptr += sizeof(struct isp4fw_resp);
-			if (rd_ptr < len) {
-				isp4hw_wreg(GET_ISP4IF_REG_BASE(ispif),
-					    rreg, rd_ptr);
-			} else {
-				dev_err(dev, "%s(%u),rd %u(should<=%u),wr %u\n",
-					isp4dbg_get_if_stream_str(stream),
-					stream, rd_ptr, len, wr_ptr);
-				return -EINVAL;
-			}
-
-		} else {
-			dev_err(dev, "sth wrong with wptr and rptr\n");
-			return -EINVAL;
-		}
-	} else if (rd_ptr > wr_ptr) {
-		u32 size;
-		u8 *dst;
-
-		dst = (u8 *)response;
-
-		size = len - rd_ptr;
-		if (size > sizeof(struct isp4fw_resp)) {
-			mem_addr += rd_ptr;
-			memcpy((u8 *)response,
-			       (u8 *)(mem_sys) + rd_ptr,
-			       sizeof(struct isp4fw_resp));
-			rd_ptr += sizeof(struct isp4fw_resp);
-			if (rd_ptr < len) {
-				isp4hw_wreg(GET_ISP4IF_REG_BASE(ispif),
-					    rreg, rd_ptr);
-			} else {
-				dev_err(dev, "%s(%u),rd %u(should<=%u),wr %u\n",
-					isp4dbg_get_if_stream_str(stream),
-					stream, rd_ptr, len, wr_ptr);
-				return -EINVAL;
-			}
-
-		} else {
-			if ((size + wr_ptr) < (sizeof(struct isp4fw_resp))) {
-				dev_err(dev, "sth wrong with wptr and rptr1\n");
-				return -EINVAL;
-			}
-
-			memcpy(dst, (u8 *)(mem_sys) + rd_ptr, size);
-
-			dst += size;
-			size = sizeof(struct isp4fw_resp) - size;
-			if (size)
-				memcpy(dst, (u8 *)(mem_sys), size);
-			rd_ptr = size;
-			if (rd_ptr < len) {
-				isp4hw_wreg(GET_ISP4IF_REG_BASE(ispif),
-					    rreg, rd_ptr);
-			} else {
-				dev_err(dev, "%s(%u),rd %u(should<=%u),wr %u\n",
-					isp4dbg_get_if_stream_str(stream),
-					stream, rd_ptr, len, wr_ptr);
-				return -EINVAL;
-			}
-		}
+		memcpy(dst, mem_sys + rd_ptr, resp_sz);
+		isp4hw_wreg(ispif->mmio, rreg, (rd_ptr + resp_sz) % len);
 	} else {
-		return -ETIME;
+		/*
+		 * FW response is split because the ring buffer wrapped
+		 * around
+		 */
+		if (wr_ptr > rd_ptr || wr_ptr < resp_sz - bytes_to_end)
+			goto err_rb_invalid;
+
+		memcpy(dst, mem_sys + rd_ptr, bytes_to_end);
+		memcpy(dst + bytes_to_end, mem_sys, resp_sz - bytes_to_end);
+		isp4hw_wreg(ispif->mmio, rreg, resp_sz - bytes_to_end);
 	}
 
-	checksum = isp4if_compute_check_sum((u8 *)response, sizeof(struct isp4fw_resp) - 4);
-
-	if (checksum != response->resp_check_sum) {
+	checksum = isp4if_compute_check_sum(resp, resp_sz - sizeof(u32));
+	if (checksum != resp->resp_check_sum) {
 		dev_err(dev, "resp checksum 0x%x,should 0x%x,rptr %u,wptr %u\n",
-			checksum, response->resp_check_sum, rd_ptr_dbg, wr_ptr_dbg);
-
+			checksum, resp->resp_check_sum, rd_ptr, wr_ptr);
 		dev_err(dev, "%s(%u), seqNo %u, resp_id %s(0x%x)\n",
-			isp4dbg_get_if_stream_str(stream), stream, response->resp_seq_num,
-			isp4dbg_get_resp_str(response->resp_id), response->resp_id);
-
+			isp4dbg_get_if_stream_str(stream), stream,
+			resp->resp_seq_num, isp4dbg_get_resp_str(resp->resp_id),
+			resp->resp_id);
 		return -EINVAL;
 	}
 
 	return 0;
+
+err_rb_invalid:
+	dev_err(dev,
+		"rb invalid: stream=%u(%s), rd=%u, wr=%u, len=%u, resp_sz=%u\n",
+		stream, isp4dbg_get_if_stream_str(stream), rd_ptr, wr_ptr, len,
+		resp_sz);
+	return -EINVAL;
 }
 
-int isp4if_send_command(struct isp4_interface *ispif, u32 cmd_id, void *package, u32 package_size)
+int isp4if_send_command(struct isp4_interface *ispif, u32 cmd_id,
+			const void *package, u32 package_size)
 {
-	return isp4if_send_fw_cmd(ispif, cmd_id, package, package_size, NULL, NULL, NULL);
+	return isp4if_send_fw_cmd(ispif, cmd_id, package, package_size, false);
 }
 
-int isp4if_send_command_sync(struct isp4_interface *ispif, u32 cmd_id, void *package,
-			     u32 package_size, u32 timeout)
+int isp4if_send_command_sync(struct isp4_interface *ispif, u32 cmd_id,
+			     const void *package, u32 package_size)
 {
-	struct device *dev = ispif->dev;
-	DECLARE_WAIT_QUEUE_HEAD(cmd_wq);
-	u32 wq_cond = 0;
-	int ret;
-	u32 seq;
-
-	ret = isp4if_send_fw_cmd(ispif, cmd_id, package, package_size, &cmd_wq, &wq_cond, &seq);
-
-	if (ret) {
-		dev_err(dev, "send fw cmd fail %d\n", ret);
-		return ret;
-	}
-
-	ret = wait_event_timeout(cmd_wq, wq_cond != 0, msecs_to_jiffies(timeout));
-	if (ret == 0) {
-		struct isp4if_cmd_element *ele;
-
-		ele = isp4if_rm_cmd_from_cmdq(ispif, seq, cmd_id);
-		kfree(ele);
-		return -ETIMEDOUT;
-	}
-
-	return 0;
+	return isp4if_send_fw_cmd(ispif, cmd_id, package, package_size, true);
 }
 
 void isp4if_clear_bufq(struct isp4_interface *ispif)
 {
-	struct isp4if_img_buf_node *buf_node = NULL;
-	struct isp4if_img_buf_node *tmp_node = NULL;
+	struct isp4if_img_buf_node *buf_node, *tmp_node;
+	LIST_HEAD(free_list);
 
-	guard(mutex)(&ispif->bufq_mutex);
+	scoped_guard(spinlock, &ispif->bufq_lock)
+		list_splice_init(&ispif->bufq, &free_list);
 
-	list_for_each_entry_safe(buf_node, tmp_node, &ispif->bufq, node) {
-		list_del(&buf_node->node);
+	list_for_each_entry_safe(buf_node, tmp_node, &free_list, node)
 		kfree(buf_node);
-	}
 }
 
 void isp4if_dealloc_buffer_node(struct isp4if_img_buf_node *buf_node)
@@ -872,31 +735,34 @@ void isp4if_dealloc_buffer_node(struct isp4if_img_buf_node *buf_node)
 	kfree(buf_node);
 }
 
-struct isp4if_img_buf_node *isp4if_alloc_buffer_node(struct isp4if_img_buf_info *buf_info)
+struct isp4if_img_buf_node *
+isp4if_alloc_buffer_node(struct isp4if_img_buf_info *buf_info)
 {
-	struct isp4if_img_buf_node *node = NULL;
+	struct isp4if_img_buf_node *node;
 
 	node = kmalloc(sizeof(*node), GFP_KERNEL);
 	if (node)
 		node->buf_info = *buf_info;
 
 	return node;
-};
+}
 
 struct isp4if_img_buf_node *isp4if_dequeue_buffer(struct isp4_interface *ispif)
 {
-	struct isp4if_img_buf_node *buf_node = NULL;
+	struct isp4if_img_buf_node *buf_node;
 
-	guard(mutex)(&ispif->bufq_mutex);
+	guard(spinlock)(&ispif->bufq_lock);
 
-	buf_node = list_first_entry_or_null(&ispif->bufq, typeof(*buf_node), node);
+	buf_node = list_first_entry_or_null(&ispif->bufq, typeof(*buf_node),
+					    node);
 	if (buf_node)
 		list_del(&buf_node->node);
 
 	return buf_node;
 }
 
-int isp4if_queue_buffer(struct isp4_interface *ispif, struct isp4if_img_buf_node *buf_node)
+int isp4if_queue_buffer(struct isp4_interface *ispif,
+			struct isp4if_img_buf_node *buf_node)
 {
 	int ret;
 
@@ -904,9 +770,8 @@ int isp4if_queue_buffer(struct isp4_interface *ispif, struct isp4if_img_buf_node
 	if (ret)
 		return ret;
 
-	guard(mutex)(&ispif->bufq_mutex);
-
-	list_add_tail(&buf_node->node, &ispif->bufq);
+	scoped_guard(spinlock, &ispif->bufq_lock)
+		list_add_tail(&buf_node->node, &ispif->bufq);
 
 	return 0;
 }
@@ -926,7 +791,7 @@ int isp4if_start(struct isp4_interface *ispif)
 
 	ret = isp4if_alloc_fw_gpumem(ispif);
 	if (ret)
-		return -ENOMEM;
+		return ret;
 
 	ret = isp4if_fw_boot(ispif);
 	if (ret)
@@ -945,24 +810,19 @@ int isp4if_deinit(struct isp4_interface *ispif)
 
 	isp4if_clear_bufq(ispif);
 
-	mutex_destroy(&ispif->cmdq_mutex);
-	mutex_destroy(&ispif->bufq_mutex);
 	mutex_destroy(&ispif->isp4if_mutex);
 
 	return 0;
 }
 
-int isp4if_init(struct isp4_interface *ispif, struct device *dev, void __iomem *isp_mmip)
+int isp4if_init(struct isp4_interface *ispif, struct device *dev,
+		void __iomem *isp_mmio)
 {
 	ispif->dev = dev;
-	ispif->mmio = isp_mmip;
+	ispif->mmio = isp_mmio;
 
-	ispif->cmd_rb_base_index = 0;
-	ispif->resp_rb_base_index = ISP4IF_RESP_CHAN_TO_RB_OFFSET - 1;
-	ispif->aligned_rb_chunk_size = ISP4IF_RB_PMBMAP_MEM_CHUNK & 0xffffffc0;
-
-	mutex_init(&ispif->cmdq_mutex); /* used for cmdq access */
-	mutex_init(&ispif->bufq_mutex); /* used for bufq access */
+	spin_lock_init(&ispif->cmdq_lock); /* used for cmdq access */
+	spin_lock_init(&ispif->bufq_lock); /* used for bufq access */
 	mutex_init(&ispif->isp4if_mutex); /* used for commands sent to ispfw */
 
 	INIT_LIST_HEAD(&ispif->cmdq);

@@ -319,7 +319,7 @@ impl platform::Driver for SepDriver {
     fn probe(
         pdev: &platform::Device<device::Core>,
         _info: Option<&()>,
-    ) -> Result<Pin<KBox<SepDriver>>> {
+    ) -> impl PinInit<Self, Error> {
         let of = pdev.as_ref().of_node().ok_or(EIO)?;
         let res = of.reserved_mem_region_to_resource_byname(c_str!("sepfw"))?;
         let data = SepData::new(
@@ -335,7 +335,7 @@ impl platform::Driver for SepDriver {
             data.clone(),
         )?);
         data.start()?;
-        Ok(KBox::pin(SepDriver(data), GFP_KERNEL)?)
+        Ok(Self(data))
     }
 }
 

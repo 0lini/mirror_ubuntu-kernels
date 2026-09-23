@@ -324,13 +324,16 @@ static void
 apple_dart_hw_enable_translation(struct apple_dart_stream_map *stream_map, int levels)
 {
 	struct apple_dart *dart = stream_map->dart;
+	u32 tcr = dart->hw->tcr_enabled;
 	int sid;
+
+	if (levels == 4)
+		tcr |= dart->hw->tcr_4level;
 
 	WARN_ON(levels != 3 && levels != 4);
 	WARN_ON(levels == 4 && !dart->four_level);
 	for_each_set_bit(sid, stream_map->sidmap, dart->num_streams)
-		writel(dart->hw->tcr_enabled | (levels == 4 ? dart->hw->tcr_4level : 0),
-		       dart->regs + DART_TCR(dart, sid));
+		writel(tcr, dart->regs + DART_TCR(dart, sid));
 }
 
 static void apple_dart_hw_disable_dma(struct apple_dart_stream_map *stream_map)
@@ -820,7 +823,8 @@ static int apple_dart_domain_add_streams(struct apple_dart_domain *domain,
 }
 
 static int apple_dart_attach_dev_paging(struct iommu_domain *domain,
-					struct device *dev)
+					struct device *dev,
+					struct iommu_domain *old)
 {
 	int ret, i;
 	struct apple_dart_stream_map *stream_map;
@@ -853,7 +857,8 @@ err:
 }
 
 static int apple_dart_attach_dev_identity(struct iommu_domain *domain,
-					  struct device *dev)
+					  struct device *dev,
+					  struct iommu_domain *old)
 {
 	struct apple_dart_master_cfg *cfg = dev_iommu_priv_get(dev);
 	struct apple_dart_stream_map *stream_map;
@@ -886,7 +891,8 @@ static struct iommu_domain apple_dart_identity_domain = {
 };
 
 static int apple_dart_attach_dev_blocked(struct iommu_domain *domain,
-					 struct device *dev)
+					 struct device *dev,
+					 struct iommu_domain *old)
 {
 	struct apple_dart_master_cfg *cfg = dev_iommu_priv_get(dev);
 	struct apple_dart_stream_map *stream_map;
@@ -951,7 +957,7 @@ static struct iommu_domain *apple_dart_domain_alloc_paging(struct device *dev)
 {
 	struct apple_dart_domain *dart_domain;
 
-	dart_domain = kzalloc(sizeof(*dart_domain), GFP_KERNEL);
+	dart_domain = kzalloc_obj(*dart_domain);
 	if (!dart_domain)
 		return NULL;
 
@@ -995,7 +1001,7 @@ static int apple_dart_of_xlate(struct device *dev,
 	sid = args->args[0];
 
 	if (!cfg) {
-		cfg = kzalloc(sizeof(*cfg), GFP_KERNEL);
+		cfg = kzalloc_obj(*cfg);
 		if (!cfg)
 			return -ENOMEM;
 		/* Will be ANDed with DART capabilities */
@@ -1008,6 +1014,8 @@ static int apple_dart_of_xlate(struct device *dev,
 	cfg_dart = cfg->stream_maps[0].dart;
 	if (cfg_dart) {
 		if (cfg_dart->pgsize != dart->pgsize)
+			return -EINVAL;
+		if (cfg_dart->ias != dart->ias)
 			return -EINVAL;
 	}
 
@@ -1388,6 +1396,7 @@ static int apple_dart_probe(struct platform_device *pdev)
 		if ((dart->dma_min ^ dart->dma_max) & ~DMA_BIT_MASK(dart->ias)) {
 			dev_err(&pdev->dev, "Invalid DMA range for ias=%d\n",
 				dart->ias);
+			ret = -EINVAL;
 			goto err_clk_disable;
 		}
 		dev_info(&pdev->dev, "Limiting DMA range to %pad..%pad\n",

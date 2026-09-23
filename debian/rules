@@ -53,13 +53,11 @@ ifeq ($(DEB_SOURCE),linux)
 	do_tools_host = true
 endif
 
-ifneq ($(do_tools_noble_hwe),true)
 # The unversioned and unflavoured bpftools and linux-perf packages should only be built for the
 # linux source package.
 ifneq ($(DEB_SOURCE),linux)
 	do_tools_bpftool = false
 	do_tools_perf = false
-endif
 endif
 
 # The linux-source package may only be built for the linux source package
@@ -106,7 +104,6 @@ endif
 
 # Being used to build a mainline build -- turn off things which do not work.
 ifeq ($(do_mainline_build),true)
-	do_extras_package=false
 	do_tools=false
 	no_dumpfile=1
 $(foreach _m,$(all_dkms_modules),$(eval do_$(_m) = false))

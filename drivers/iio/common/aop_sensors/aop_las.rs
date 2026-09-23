@@ -38,10 +38,7 @@ impl platform::Driver for IIOAopLasDriver {
 
     const OF_ID_TABLE: Option<of::IdTable<Self::IdInfo>> = Some(&OF_TABLE);
 
-    fn probe(
-        pdev: &platform::Device<Core>,
-        _info: Option<&()>,
-    ) -> Result<Pin<KBox<IIOAopLasDriver>>> {
+    fn probe(pdev: &platform::Device<Core>, _info: Option<&()>) -> impl PinInit<Self, Error> {
         let dev = pdev.as_ref();
         let parent = dev.parent().unwrap();
         // SAFETY: our parent is AOP, and AopDriver is repr(transparent) for Arc<dyn Aop>
@@ -54,16 +51,13 @@ impl platform::Driver for IIOAopLasDriver {
         let data = AopSensorData::new(dev.into(), ty, MsgProc)?;
         adata.add_fakehid_listener(service, data.clone())?;
         let info_mask = 1 << bindings::BINDINGS_IIO_CHAN_INFO_RAW;
-        Ok(KBox::pin(
-            IIOAopLasDriver(IIORegistration::<MsgProc>::new(
-                data,
-                c_str!("aop-sensors-las"),
-                ty,
-                info_mask,
-                &THIS_MODULE,
-            )?),
-            GFP_KERNEL,
-        )?)
+        Ok(IIOAopLasDriver(IIORegistration::<MsgProc>::new(
+            data,
+            c"aop-sensors-las",
+            ty,
+            info_mask,
+            &THIS_MODULE,
+        )?))
     }
 }
 

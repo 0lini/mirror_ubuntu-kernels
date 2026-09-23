@@ -128,14 +128,14 @@
 				#size-cells = <0>;
 				port@0 {
 					reg = <0>;
-					typec2_con_hs: endpoint {
-						remote-endpoint = <&typec2_usb_hs>;
+					typec2_connector_hs: endpoint {
+						remote-endpoint = <&dwc3_2_hs>;
 					};
 				};
 				port@1 {
 					reg = <1>;
-					typec2_con_ss: endpoint {
-						remote-endpoint = <&typec2_usb_ss>;
+					typec2_connector_ss: endpoint {
+						remote-endpoint = <&atcphy2_typec_lanes>;
 					};
 				};
 			};
@@ -160,23 +160,21 @@
 				#size-cells = <0>;
 				port@0 {
 					reg = <0>;
-					typec3_con_hs: endpoint {
-						remote-endpoint = <&typec3_usb_hs>;
+					typec3_connector_hs: endpoint {
+						remote-endpoint = <&dwc3_3_hs>;
 					};
 				};
 				port@1 {
 					reg = <1>;
-					typec3_con_ss: endpoint {
-						remote-endpoint = <&typec3_usb_ss>;
+					typec3_connector_ss: endpoint {
+						remote-endpoint = <&atcphy3_typec_lanes>;
 					};
 				};
 			};
 		};
 	};
 
-	/* hpm4 included from t6022-jxxxd.dtsi */
-
-	/* hpm5 included from t6022-jxxxd.dtsi */
+	/* hpm4 and hpm5 included from t6022-jxxxd.dtsi */
 
 	hpm6: usb-pd@3d {
 		compatible = "apple,cd321x";
@@ -196,14 +194,14 @@
 				#size-cells = <0>;
 				port@0 {
 					reg = <0>;
-					typec6_con_hs: endpoint {
-						remote-endpoint = <&typec6_usb_hs>;
+					typec6_connector_hs: endpoint {
+						remote-endpoint = <&dwc3_6_hs>;
 					};
 				};
 				port@1 {
 					reg = <1>;
-					typec6_con_ss: endpoint {
-						remote-endpoint = <&typec6_usb_ss>;
+					typec6_connector_ss: endpoint {
+						remote-endpoint = <&atcphy6_typec_lanes>;
 					};
 				};
 			};
@@ -228,14 +226,14 @@
 				#size-cells = <0>;
 				port@0 {
 					reg = <0>;
-					typec7_con_hs: endpoint {
-						remote-endpoint = <&typec7_usb_hs>;
+					typec7_connector_hs: endpoint {
+						remote-endpoint = <&dwc3_7_hs>;
 					};
 				};
 				port@1 {
 					reg = <1>;
-					typec7_con_ss: endpoint {
-						remote-endpoint = <&typec7_usb_ss>;
+					typec7_connector_ss: endpoint {
+						remote-endpoint = <&atcphy7_typec_lanes>;
 					};
 				};
 			};
@@ -243,11 +241,11 @@
 	};
 };
 
-&hpm4 {
+&typec4 {
 	label = "USB-C Back 3";
 };
 
-&hpm5 {
+&typec5 {
 	label = "USB-C Back 4";
 };
 
@@ -273,14 +271,14 @@
 				#size-cells = <0>;
 				port@0 {
 					reg = <0>;
-					typec0_con_hs: endpoint {
-						remote-endpoint = <&typec0_usb_hs>;
+					typec0_connector_hs: endpoint {
+						remote-endpoint = <&dwc3_0_hs>;
 					};
 				};
 				port@1 {
 					reg = <1>;
-					typec0_con_ss: endpoint {
-						remote-endpoint = <&typec0_usb_ss>;
+					typec0_connector_ss: endpoint {
+						remote-endpoint = <&atcphy0_typec_lanes>;
 					};
 				};
 			};
@@ -305,14 +303,14 @@
 				#size-cells = <0>;
 				port@0 {
 					reg = <0>;
-					typec1_con_hs: endpoint {
-						remote-endpoint = <&typec1_usb_hs>;
+					typec1_connector_hs: endpoint {
+						remote-endpoint = <&dwc3_1_hs>;
 					};
 				};
 				port@1 {
 					reg = <1>;
-					typec1_con_ss: endpoint {
-						remote-endpoint = <&typec1_usb_ss>;
+					typec1_connector_ss: endpoint {
+						remote-endpoint = <&atcphy1_typec_lanes>;
 					};
 				};
 			};
@@ -322,98 +320,255 @@
 
 /* USB controllers */
 &dwc3_0 {
-	port {
-		typec0_usb_hs: endpoint {
-			remote-endpoint = <&typec0_con_hs>;
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			reg = <0>;
+			dwc3_0_hs: endpoint {
+				remote-endpoint = <&typec0_connector_hs>;
+			};
+		};
+
+		port@1 {
+			reg = <1>;
+			dwc3_0_ss: endpoint {
+				remote-endpoint = <&atcphy0_usb3>;
+			};
 		};
 	};
 };
 
 &dwc3_1 {
-	port {
-		typec1_usb_hs: endpoint {
-			remote-endpoint = <&typec1_con_hs>;
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			reg = <0>;
+			dwc3_1_hs: endpoint {
+				remote-endpoint = <&typec1_connector_hs>;
+			};
+		};
+
+		port@1 {
+			reg = <1>;
+			dwc3_1_ss: endpoint {
+				remote-endpoint = <&atcphy1_usb3>;
+			};
 		};
 	};
 };
 
 &dwc3_2 {
-	port {
-		typec2_usb_hs: endpoint {
-			remote-endpoint = <&typec2_con_hs>;
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			reg = <0>;
+			dwc3_2_hs: endpoint {
+				remote-endpoint = <&typec2_connector_hs>;
+			};
+		};
+
+		port@1 {
+			reg = <1>;
+			dwc3_2_ss: endpoint {
+				remote-endpoint = <&atcphy2_usb3>;
+			};
 		};
 	};
 };
 
 &dwc3_3 {
-	port {
-		typec3_usb_hs: endpoint {
-			remote-endpoint = <&typec3_con_hs>;
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			reg = <0>;
+			dwc3_3_hs: endpoint {
+				remote-endpoint = <&typec3_connector_hs>;
+			};
+		};
+
+		port@1 {
+			reg = <1>;
+			dwc3_3_ss: endpoint {
+				remote-endpoint = <&atcphy3_usb3>;
+			};
 		};
 	};
 };
 
+/* USB controllers on die 1 */
 &dwc3_2_die1 {
-	port {
-		typec6_usb_hs: endpoint {
-			remote-endpoint = <&typec6_con_hs>;
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			reg = <0>;
+			dwc3_6_hs: endpoint {
+				remote-endpoint = <&typec6_connector_hs>;
+			};
+		};
+
+		port@1 {
+			reg = <1>;
+			dwc3_6_ss: endpoint {
+				remote-endpoint = <&atcphy6_usb3>;
+			};
 		};
 	};
 };
 
 &dwc3_3_die1 {
-	port {
-		typec7_usb_hs: endpoint {
-			remote-endpoint = <&typec7_con_hs>;
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			reg = <0>;
+			dwc3_7_hs: endpoint {
+				remote-endpoint = <&typec7_connector_hs>;
+			};
+		};
+
+		port@1 {
+			reg = <1>;
+			dwc3_7_ss: endpoint {
+				remote-endpoint = <&atcphy7_usb3>;
+			};
 		};
 	};
 };
 
 /* Type-C PHYs */
 &atcphy0 {
-	port {
-		typec0_usb_ss: endpoint {
-			remote-endpoint = <&typec0_con_ss>;
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			reg = <0>;
+			atcphy0_typec_lanes: endpoint {
+				remote-endpoint = <&typec0_connector_ss>;
+			};
+		};
+
+		port@1 {
+			reg = <1>;
+			atcphy0_usb3: endpoint {
+				remote-endpoint = <&dwc3_0_ss>;
+			};
 		};
 	};
 };
 
 &atcphy1 {
-	port {
-		typec1_usb_ss: endpoint {
-			remote-endpoint = <&typec1_con_ss>;
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			reg = <0>;
+			atcphy1_typec_lanes: endpoint {
+				remote-endpoint = <&typec1_connector_ss>;
+			};
+		};
+
+		port@1 {
+			reg = <1>;
+			atcphy1_usb3: endpoint {
+				remote-endpoint = <&dwc3_1_ss>;
+			};
 		};
 	};
 };
 
 &atcphy2 {
-	port {
-		typec2_usb_ss: endpoint {
-			remote-endpoint = <&typec2_con_ss>;
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			reg = <0>;
+			atcphy2_typec_lanes: endpoint {
+				remote-endpoint = <&typec2_connector_ss>;
+			};
+		};
+
+		port@1 {
+			reg = <1>;
+			atcphy2_usb3: endpoint {
+				remote-endpoint = <&dwc3_2_ss>;
+			};
 		};
 	};
 };
 
 &atcphy3 {
-	port {
-		typec3_usb_ss: endpoint {
-			remote-endpoint = <&typec3_con_ss>;
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			reg = <0>;
+			atcphy3_typec_lanes: endpoint {
+				remote-endpoint = <&typec3_connector_ss>;
+			};
+		};
+
+		port@1 {
+			reg = <1>;
+			atcphy3_usb3: endpoint {
+				remote-endpoint = <&dwc3_3_ss>;
+			};
 		};
 	};
 };
 
 &atcphy2_die1 {
-	port {
-		typec6_usb_ss: endpoint {
-			remote-endpoint = <&typec6_con_ss>;
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			reg = <0>;
+			atcphy6_typec_lanes: endpoint {
+				remote-endpoint = <&typec6_connector_ss>;
+			};
+		};
+
+		port@1 {
+			reg = <1>;
+			atcphy6_usb3: endpoint {
+				remote-endpoint = <&dwc3_6_ss>;
+			};
 		};
 	};
 };
 
 &atcphy3_die1 {
-	port {
-		typec7_usb_ss: endpoint {
-			remote-endpoint = <&typec7_con_ss>;
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			reg = <0>;
+			atcphy7_typec_lanes: endpoint {
+				remote-endpoint = <&typec7_connector_ss>;
+			};
+		};
+
+		port@1 {
+			reg = <1>;
+			atcphy7_usb3: endpoint {
+				remote-endpoint = <&dwc3_7_ss>;
+			};
 		};
 	};
 };
@@ -841,11 +996,18 @@
 	status = "ok";
 };
 
-// delete unused PCIe nodes
+/*
+ * Delete unused PCIe nodes, the Mac Pro uses slightly different PCIe
+ * controllers with a single port connected to a PM40100 PCIe switch
+ */
 /delete-node/ &pcie0;
 /delete-node/ &pcie0_dart_0;
 /delete-node/ &pcie0_dart_1;
 /delete-node/ &pcie0_dart_2;
 /delete-node/ &pcie0_dart_3;
+
+&nco_clkref {
+	clock-frequency = <1068000000>;
+};
 
 #include "spi1-nvram.dtsi"

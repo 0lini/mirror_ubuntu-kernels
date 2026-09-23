@@ -9,9 +9,9 @@
 #include <linux/log2.h>
 
 #include <rdma/ib_addr.h>
-#include <rdma/ib_umem.h>
 #include <rdma/ib_user_verbs.h>
 #include <rdma/ib_verbs.h>
+#include <rdma/iter.h>
 #include <rdma/uverbs_ioctl.h>
 #define UVERBS_MODULE_NAME efa_ib
 #include <rdma/uverbs_named_ioctl.h>
@@ -525,7 +525,7 @@ efa_user_mmap_entry_insert(struct ib_ucontext *ucontext,
 			   u64 address, size_t length,
 			   u8 mmap_flag, u64 *offset)
 {
-	struct efa_user_mmap_entry *entry = kzalloc(sizeof(*entry), GFP_KERNEL);
+	struct efa_user_mmap_entry *entry = kzalloc_obj(*entry);
 	int err;
 
 	if (!entry)
@@ -1335,7 +1335,7 @@ static struct scatterlist *efa_vmalloc_buf_to_sg(u64 *buf, int page_cnt)
 	struct page *pg;
 	int i;
 
-	sglist = kmalloc_array(page_cnt, sizeof(*sglist), GFP_KERNEL);
+	sglist = kmalloc_objs(*sglist, page_cnt);
 	if (!sglist)
 		return NULL;
 	sg_init_table(sglist, page_cnt);
@@ -1374,9 +1374,7 @@ static int pbl_chunk_list_create(struct efa_dev *dev, struct pbl_context *pbl)
 	chunk_list_size = DIV_ROUND_UP(page_cnt, EFA_PTRS_PER_CHUNK);
 
 	chunk_list->size = chunk_list_size;
-	chunk_list->chunks = kcalloc(chunk_list_size,
-				     sizeof(*chunk_list->chunks),
-				     GFP_KERNEL);
+	chunk_list->chunks = kzalloc_objs(*chunk_list->chunks, chunk_list_size);
 	if (!chunk_list->chunks)
 		return -ENOMEM;
 
@@ -1663,7 +1661,7 @@ static struct efa_mr *efa_alloc_mr(struct ib_pd *ibpd, int access_flags,
 	struct efa_mr *mr;
 
 	if (udata && udata->inlen &&
-	    !ib_is_udata_cleared(udata, 0, sizeof(udata->inlen))) {
+	    !ib_is_udata_cleared(udata, 0, udata->inlen)) {
 		ibdev_dbg(&dev->ibdev,
 			  "Incompatible ABI params, udata not cleared\n");
 		return ERR_PTR(-EINVAL);
@@ -1682,7 +1680,7 @@ static struct efa_mr *efa_alloc_mr(struct ib_pd *ibpd, int access_flags,
 		return ERR_PTR(-EOPNOTSUPP);
 	}
 
-	mr = kzalloc(sizeof(*mr), GFP_KERNEL);
+	mr = kzalloc_obj(*mr);
 	if (!mr)
 		return ERR_PTR(-ENOMEM);
 
@@ -1782,7 +1780,8 @@ struct ib_mr *efa_reg_user_mr_dmabuf(struct ib_pd *ibpd, u64 start,
 						access_flags);
 	if (IS_ERR(umem_dmabuf)) {
 		err = PTR_ERR(umem_dmabuf);
-		ibdev_dbg(&dev->ibdev, "Failed to get dmabuf umem[%d]\n", err);
+		ibdev_dbg(&dev->ibdev, "Failed to get dmabuf umem[%pe]\n",
+			  umem_dmabuf);
 		goto err_free;
 	}
 
@@ -1826,7 +1825,8 @@ struct ib_mr *efa_reg_mr(struct ib_pd *ibpd, u64 start, u64 length,
 	if (IS_ERR(mr->umem)) {
 		err = PTR_ERR(mr->umem);
 		ibdev_dbg(&dev->ibdev,
-			  "Failed to pin and map user space memory[%d]\n", err);
+			  "Failed to pin and map user space memory[%pe]\n",
+			  mr->umem);
 		goto err_free;
 	}
 

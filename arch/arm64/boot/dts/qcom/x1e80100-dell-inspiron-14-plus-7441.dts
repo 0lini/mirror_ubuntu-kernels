@@ -4,7 +4,7 @@
  */
 /dts-v1/;
 
-#include "x1e80100.dtsi"
+#include "hamoa.dtsi"
 #include "x1-dell-thena.dtsi"
 
 / {
@@ -35,6 +35,11 @@
 		pinctrl-0 = <&ts0_default>;
 		pinctrl-names = "default";
 	};
+};
+
+&iris {
+	firmware-name = "qcom/x1e80100/dell/inspiron-14-plus-7441/qcvss8380.mbn";
+	status = "okay";
 };
 
 &remoteproc_adsp {

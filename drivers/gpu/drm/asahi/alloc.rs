@@ -12,18 +12,35 @@
 //! debugging with a GPU memory snapshot, since it makes it easier to identify use-after-free and
 //! caching issues.
 
-use kernel::{drm::mm, error::Result, prelude::*, str::CString};
+use kernel::{
+    drm::mm,
+    error::Result,
+    prelude::*,
+    str::CString, //
+};
 
 use crate::debug::*;
-use crate::driver::{AsahiDevRef, AsahiDevice};
+use crate::driver::{
+    AsahiDevRef,
+    AsahiDevice, //
+};
 use crate::fw::types::Zeroable;
 use crate::mmu;
-use crate::object::{GpuArray, GpuObject, GpuOnlyArray, GpuStruct, GpuWeakPointer};
+use crate::object::{
+    GpuArray,
+    GpuObject,
+    GpuOnlyArray,
+    GpuStruct,
+    GpuWeakPointer, //
+};
 use crate::util::RangeExt;
 
 use core::cmp::Ordering;
 use core::fmt;
-use core::fmt::{Debug, Formatter};
+use core::fmt::{
+    Debug,
+    Formatter, //
+};
 use core::marker::PhantomData;
 use core::mem;
 use core::ops::Range;
@@ -424,8 +441,8 @@ impl Drop for SimpleAllocation {
             self.gpu_ptr()
         );
         if debug_enabled(DebugFlags::FillAllocations) {
-            if let Ok(vmap) = self.obj.vmap() {
-                vmap.as_mut_slice().fill(0x42);
+            if let Ok(mut vmap) = self.obj.vmap() {
+                vmap.memset(0x42);
             }
         }
     }
@@ -516,7 +533,7 @@ impl Allocator for SimpleAllocator {
         let mut obj = crate::gem::new_kernel_object(&self.dev, size_aligned)?;
         let p = obj.vmap()?.as_mut_ptr() as *mut u8;
         if debug_enabled(DebugFlags::FillAllocations) {
-            obj.vmap()?.as_mut_slice().fill(0xde);
+            obj.vmap()?.memset(0xde);
         }
         let mapping = obj.map_into_range(
             &self.vm,
@@ -764,7 +781,7 @@ impl HeapAllocator {
 
         let mut obj = crate::gem::new_kernel_object(&self.dev, size_aligned)?;
         if self.cpu_maps && debug_enabled(DebugFlags::FillAllocations) {
-            obj.vmap()?.as_mut_slice().fill(0xde);
+            obj.vmap()?.memset(0xde);
         }
 
         let gpu_ptr = self.top;

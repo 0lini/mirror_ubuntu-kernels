@@ -8,7 +8,13 @@
 
 use crate::{
     bindings, drm,
-    drm::{device, gem::BaseObject},
+    drm::{
+        device,
+        gem::{
+            BaseObject,
+            IntoGEMObject, //
+        },
+    },
     error::{
         code::{EINVAL, ENOMEM},
         from_result, to_result, Error, Result,
@@ -17,8 +23,6 @@ use crate::{
     types::{ARef, AlwaysRefCounted, Opaque},
 };
 
-use crate::drm::gem::BaseDriverObject;
-use crate::drm::gem::IntoGEMObject;
 use core::cell::UnsafeCell;
 use core::marker::{PhantomData, PhantomPinned};
 use core::mem::ManuallyDrop;
@@ -42,8 +46,8 @@ impl GpuVaFlags {
     /// The GpuVa is a sparse mapping.
     pub const SPARSE: GpuVaFlags = GpuVaFlags(bindings::drm_gpuva_flags_DRM_GPUVA_SPARSE);
 
-    /// The GpuVa is a sparse mapping.
-    pub const SINGLE_PAGE: GpuVaFlags = GpuVaFlags(bindings::drm_gpuva_flags_DRM_GPUVA_SPARSE);
+    /// The GpuVa is a repeat mapping.
+    pub const REPEAT: GpuVaFlags = GpuVaFlags(bindings::drm_gpuva_flags_DRM_GPUVA_REPEAT);
 
     /// Construct a driver-specific GpuVaFlag.
     ///
@@ -134,6 +138,9 @@ impl<T: Default> DriverGpuVmBo for T {
     }
 }
 
+/// A convenience type for the driver's GEM object.
+type Object<T> = <<T as DriverGpuVm>::Driver as drm::driver::Driver>::Object;
+
 #[repr(transparent)]
 pub struct OpMap<T: DriverGpuVm>(bindings::drm_gpuva_op_map, PhantomData<T>);
 #[repr(transparent)]
@@ -154,10 +161,8 @@ impl<T: DriverGpuVm> OpMap<T> {
     pub fn flags(&self) -> GpuVaFlags {
         GpuVaFlags(self.0.flags)
     }
-    pub fn object(&self) -> &<<T::Driver as drm::Driver>::Object as BaseDriverObject>::Object {
-        let p = unsafe {
-            <<<T::Driver as drm::Driver>::Object as BaseDriverObject>::Object as IntoGEMObject>::from_raw(self.0.gem.obj)
-        };
+    pub fn object(&self) -> &Object<T> {
+        let p = unsafe { <Object<T> as IntoGEMObject>::from_raw(self.0.gem.obj) };
         // SAFETY: The GEM object has an active reference for the lifetime of this op
         &*p
     }
@@ -479,6 +484,7 @@ impl<T: DriverGpuVm> GpuVm<T> {
         sm_step_map: Some(step_map_callback::<T>),
         sm_step_remap: Some(step_remap_callback::<T>),
         sm_step_unmap: Some(step_unmap_callback::<T>),
+        sm_can_merge_flags: None,
     };
 
     fn gpuvm(&self) -> *const bindings::drm_gpuvm {
@@ -489,7 +495,7 @@ impl<T: DriverGpuVm> GpuVm<T> {
         name: &'static CStr,
         flags: bindings::drm_gpuvm_flags,
         dev: &device::Device<T::Driver>,
-        r_obj: ARef<<<T::Driver as drm::Driver>::Object as BaseDriverObject>::Object>,
+        r_obj: ARef<Object<T>>,
         range: Range<u64>,
         reserve_range: Range<u64>,
         inner: impl PinInit<T, E>,
@@ -542,7 +548,7 @@ impl<T: DriverGpuVm> GpuVm<T> {
 
     pub fn exec_lock<'a, 'b>(
         &'a self,
-        obj: Option<&'b <<T::Driver as drm::Driver>::Object as BaseDriverObject>::Object>,
+        obj: Option<&'b Object<T>>,
         interruptible: bool,
     ) -> Result<LockedGpuVm<'a, 'b, T>> {
         // Do not try to lock the object if it is internal (since it is already locked).
@@ -592,16 +598,11 @@ impl<T: DriverGpuVm> GpuVm<T> {
         unsafe { bindings::drm_gpuvm_bo_deferred_cleanup(self.gpuvm() as *mut _) }
     }
 
-    pub fn find_bo(& self,
-        obj: &<<T::Driver as drm::Driver>::Object as BaseDriverObject>::Object
-    ) -> Option<ARef<GpuVmBo<T>>> {
+    pub fn find_bo(&self, obj: &Object<T>) -> Option<ARef<GpuVmBo<T>>> {
         obj.lock_gpuva();
         // SAFETY: drm_gem_object.gpuva.lock was just locked.
         let p = unsafe {
-            bindings::drm_gpuvm_bo_find(
-                self.gpuvm() as *mut _,
-                obj.as_raw() as *const _ as *mut _,
-            )
+            bindings::drm_gpuvm_bo_find(self.gpuvm() as *mut _, obj.as_raw() as *const _ as *mut _)
         };
         obj.unlock_gpuva();
         if p.is_null() {
@@ -615,12 +616,11 @@ impl<T: DriverGpuVm> GpuVm<T> {
         }
     }
 
-    pub fn obtain_bo(& self,
-        obj: &<<T::Driver as drm::Driver>::Object as BaseDriverObject>::Object) -> Result<ARef<GpuVmBo<T>>> {
+    pub fn obtain_bo(&self, obj: &Object<T>) -> Result<ARef<GpuVmBo<T>>> {
         obj.lock_gpuva();
         // SAFETY: drm_gem_object.gpuva.lock was just locked.
         let p = unsafe {
-            bindings::drm_gpuvm_bo_obtain(
+            bindings::drm_gpuvm_bo_obtain_locked(
                 self.gpuvm() as *mut _,
                 obj.as_raw() as *const _ as *mut _,
             )
@@ -637,11 +637,8 @@ impl<T: DriverGpuVm> GpuVm<T> {
         }
     }
 
-    pub fn bo_unmap(& self, ctx: &mut T::StepContext, bo: &GpuVmBo<T>) -> Result {
-        let mut ctx = StepContext {
-            ctx,
-            gpuvm: self,
-        };
+    pub fn bo_unmap(&self, ctx: &mut T::StepContext, bo: &GpuVmBo<T>) -> Result {
+        let mut ctx = StepContext { ctx, gpuvm: self };
         // SAFETY: LockedGpuVm implies the right locks are held.
         to_result(unsafe {
             bindings::drm_gpuvm_bo_unmap(&bo.bo as *const _ as *mut _, &mut ctx as *mut _ as *mut _)
@@ -666,7 +663,7 @@ unsafe impl<T: DriverGpuVm> AlwaysRefCounted for GpuVm<T> {
 pub struct LockedGpuVm<'a, 'b, T: DriverGpuVm> {
     gpuvm: &'a GpuVm<T>,
     vm_exec: KBox<bindings::drm_gpuvm_exec>,
-    obj: Option<&'b <<T::Driver as drm::Driver>::Object as BaseDriverObject>::Object>,
+    obj: Option<&'b Object<T>>,
 }
 
 impl<T: DriverGpuVm> LockedGpuVm<'_, '_, T> {
@@ -694,7 +691,7 @@ impl<T: DriverGpuVm> LockedGpuVm<'_, '_, T> {
         let obj = self.obj.ok_or(EINVAL)?;
         // SAFETY: LockedGpuVm implies the right locks are held.
         let p = unsafe {
-            bindings::drm_gpuvm_bo_obtain(
+            bindings::drm_gpuvm_bo_obtain_locked(
                 self.gpuvm.gpuvm() as *mut _,
                 obj.as_raw() as *const _ as *mut _,
             )
@@ -716,6 +713,7 @@ impl<T: DriverGpuVm> LockedGpuVm<'_, '_, T> {
         req_addr: u64,
         req_range: u64,
         req_offset: u64,
+        req_gem_range: u32,
         flags: GpuVaFlags,
     ) -> Result {
         let obj = self.obj.ok_or(EINVAL)?;
@@ -723,16 +721,28 @@ impl<T: DriverGpuVm> LockedGpuVm<'_, '_, T> {
             ctx,
             gpuvm: self.gpuvm,
         };
+
+        let req = bindings::drm_gpuvm_map_req {
+            map: bindings::drm_gpuva_op_map {
+                va: bindings::drm_gpuva_op_map__bindgen_ty_1 {
+                    addr: req_addr,
+                    range: req_range,
+                },
+                gem: bindings::drm_gpuva_op_map__bindgen_ty_2 {
+                    offset: req_offset,
+                    range: req_gem_range,
+                    obj: obj.as_raw(),
+                },
+                flags: flags.as_raw(),
+            },
+        };
+
         // SAFETY: LockedGpuVm implies the right locks are held.
         to_result(unsafe {
             bindings::drm_gpuvm_sm_map(
                 self.gpuvm.gpuvm() as *mut _,
                 &mut ctx as *mut _ as *mut _,
-                req_addr,
-                req_range,
-                obj.as_raw() as *const _ as *mut _,
-                req_offset,
-                flags.as_raw(),
+                &raw const req,
             )
         })
     }

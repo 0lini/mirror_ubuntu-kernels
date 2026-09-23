@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only OR MIT
-/* Copyright 2021 Alyssa Rosenzweig <alyssa@rosenzweig.io> */
+/* Copyright 2021 Alyssa Rosenzweig */
 
 /*
  * This file is intended to be included multiple times with IOMFB_VER
@@ -13,12 +13,21 @@
 #include <linux/types.h>
 
 #include "iomfb.h"
+#include "iomfb_plane.h"
+#include "plane.h"
 #include "version_utils.h"
 
 struct DCP_FW_NAME(dcp_swap) {
 	u64 ts1;
 	u64 ts2;
-	u64 unk_10[6];
+
+	u64 unk_10;
+	u64 unk_18;
+	u64 ts64_unk;
+	u64 unk_28;
+	u64 ts3;
+	u64 unk_38;
+
 	u64 flags1;
 	u64 flags2;
 
@@ -54,33 +63,7 @@ struct DCP_FW_NAME(dcp_swap) {
 
 /* Information describing a surface */
 struct DCP_FW_NAME(dcp_surface) {
-	u8 is_tiled;
-	u8 is_tearing_allowed;
-	u8 is_premultiplied;
-	u32 plane_cnt;
-	u32 plane_cnt2;
-	u32 format; /* DCP fourcc */
-	u32 ycbcr_matrix;
-	u8 xfer_func;
-	u8 colorspace;
-	u32 stride;
-	u16 pix_size;
-	u8 pel_w;
-	u8 pel_h;
-	u32 offset;
-	u32 width;
-	u32 height;
-	u32 buf_size;
-	u64 protection_opts;
-	u32 surface_id;
-	struct dcp_component_types comp_types[MAX_PLANES];
-	u64 has_comp;
-	struct dcp_plane_info planes[MAX_PLANES];
-	u64 has_planes;
-	u32 compression_info[MAX_PLANES][13];
-	u64 has_compr_info;
-	u32 unk_num;
-	u32 unk_denom;
+	struct dcp_surface base;
 #if DCP_FW_VER < DCP_FW_VERSION(13, 2, 0)
 	u8 padding[7];
 #else

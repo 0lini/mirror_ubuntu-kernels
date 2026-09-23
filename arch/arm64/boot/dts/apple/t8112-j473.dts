@@ -76,15 +76,22 @@
 };
 
 /*
- * Provide labels for the USB type C ports.
+ * Keep the power-domains used for the HDMI port on.
  */
-
-&typec0 {
-	label = "USB-C Back-left";
+&framebuffer0 {
+	power-domains = <&ps_dispext_cpu0>, <&ps_dptx_ext_phy>;
 };
 
-&typec1 {
-	label = "USB-C Back-right";
+/*
+ * The M2 Mac mini uses dispext for the HDMI output so it's not necessary to
+ * keep disp0 power-domains always-on.
+ */
+&ps_disp0_sys {
+	/delete-property/ apple,always-on;
+};
+
+&ps_disp0_fe {
+	/delete-property/ apple,always-on;
 };
 
 /*
@@ -135,6 +142,18 @@
 
 &pcie2_dart {
 	status = "okay";
+};
+
+/*
+ * Provide labels for the USB type C ports.
+ */
+
+&typec0 {
+	label = "USB-C Back-left";
+};
+
+&typec1 {
+	label = "USB-C Back-right";
 };
 
 &i2c1 {

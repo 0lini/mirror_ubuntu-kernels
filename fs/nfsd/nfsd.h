@@ -156,6 +156,16 @@ static inline void nfsd_debugfs_exit(void) {}
 
 extern bool nfsd_disable_splice_read __read_mostly;
 
+enum {
+	/* Any new NFSD_IO enum value must be added at the end */
+	NFSD_IO_BUFFERED,
+	NFSD_IO_DONTCACHE,
+	NFSD_IO_DIRECT,
+};
+
+extern u64 nfsd_io_cache_read __read_mostly;
+extern u64 nfsd_io_cache_write __read_mostly;
+
 extern int nfsd_max_blksize;
 
 static inline int nfsd_v4client(struct svc_rqst *rq)
@@ -337,14 +347,8 @@ void		nfsd_lockd_shutdown(void);
  * cannot conflict with any existing be32 nfserr value.
  */
 enum {
-	NFSERR_DROPIT = NFS4ERR_FIRST_FREE,
-/* if a request fails due to kmalloc failure, it gets dropped.
- *  Client should resend eventually
- */
-#define	nfserr_dropit		cpu_to_be32(NFSERR_DROPIT)
-
 /* end-of-file indicator in readdir */
-	NFSERR_EOF,
+	NFSERR_EOF = NFS4ERR_FIRST_FREE,
 #define	nfserr_eof		cpu_to_be32(NFSERR_EOF)
 
 /* replay detected */
@@ -393,14 +397,13 @@ enum {
 #define	NFSD_CB_GETATTR_TIMEOUT		NFSD_DELEGRETURN_TIMEOUT
 
 /*
- * The following attributes are currently not supported by the NFSv4 server:
+ * The following attributes are not implemented by NFSD:
  *    ARCHIVE       (deprecated anyway)
  *    HIDDEN        (unlikely to be supported any time soon)
  *    MIMETYPE      (unlikely to be supported any time soon)
  *    QUOTA_*       (will be supported in a forthcoming patch)
  *    SYSTEM        (unlikely to be supported any time soon)
  *    TIME_BACKUP   (unlikely to be supported any time soon)
- *    TIME_CREATE   (unlikely to be supported any time soon)
  */
 #define NFSD4_SUPPORTED_ATTRS_WORD0                                                         \
 (FATTR4_WORD0_SUPPORTED_ATTRS   | FATTR4_WORD0_TYPE         | FATTR4_WORD0_FH_EXPIRE_TYPE   \
@@ -451,6 +454,16 @@ enum {
 #define NFSD4_2_SECURITY_ATTRS		0
 #endif
 
+#ifdef CONFIG_NFSD_V4_POSIX_ACLS
+#define NFSD4_2_POSIX_ACL_ATTRS \
+	(FATTR4_WORD2_ACL_TRUEFORM | \
+	FATTR4_WORD2_ACL_TRUEFORM_SCOPE | \
+	FATTR4_WORD2_POSIX_DEFAULT_ACL | \
+	FATTR4_WORD2_POSIX_ACCESS_ACL)
+#else
+#define NFSD4_2_POSIX_ACL_ATTRS		0
+#endif
+
 #define NFSD4_2_SUPPORTED_ATTRS_WORD2 \
 	(NFSD4_1_SUPPORTED_ATTRS_WORD2 | \
 	FATTR4_WORD2_MODE_UMASK | \
@@ -459,7 +472,8 @@ enum {
 	FATTR4_WORD2_XATTR_SUPPORT | \
 	FATTR4_WORD2_TIME_DELEG_ACCESS | \
 	FATTR4_WORD2_TIME_DELEG_MODIFY | \
-	FATTR4_WORD2_OPEN_ARGUMENTS)
+	FATTR4_WORD2_OPEN_ARGUMENTS | \
+	NFSD4_2_POSIX_ACL_ATTRS)
 
 extern const u32 nfsd_suppattrs[3][3];
 
@@ -527,11 +541,18 @@ static inline bool nfsd_attrs_supported(u32 minorversion, const u32 *bmval)
 #else
 #define MAYBE_FATTR4_WORD2_SECURITY_LABEL 0
 #endif
+#ifdef CONFIG_NFSD_V4_POSIX_ACLS
+#define MAYBE_FATTR4_WORD2_POSIX_ACL_ATTRS \
+	FATTR4_WORD2_POSIX_DEFAULT_ACL | FATTR4_WORD2_POSIX_ACCESS_ACL
+#else
+#define MAYBE_FATTR4_WORD2_POSIX_ACL_ATTRS 0
+#endif
 #define NFSD_WRITEABLE_ATTRS_WORD2 \
 	(FATTR4_WORD2_MODE_UMASK \
 	| MAYBE_FATTR4_WORD2_SECURITY_LABEL \
 	| FATTR4_WORD2_TIME_DELEG_ACCESS \
 	| FATTR4_WORD2_TIME_DELEG_MODIFY \
+	| MAYBE_FATTR4_WORD2_POSIX_ACL_ATTRS \
 	)
 
 #define NFSD_SUPPATTR_EXCLCREAT_WORD0 \
@@ -547,6 +568,10 @@ static inline bool nfsd_attrs_supported(u32 minorversion, const u32 *bmval)
  * The FATTR4_WORD2_TIME_DELEG attributes are not to be allowed for
  * OPEN(create) with EXCLUSIVE4_1. It doesn't make sense to set a
  * delegated timestamp on a new file.
+ *
+ * This mask includes NFSv4.2-only attributes (e.g., POSIX ACLs).
+ * Version filtering occurs via nfsd_suppattrs[] before this mask
+ * is applied, so pre-4.2 clients never see unsupported attributes.
  */
 #define NFSD_SUPPATTR_EXCLCREAT_WORD2 \
 	(NFSD_WRITEABLE_ATTRS_WORD2 & \

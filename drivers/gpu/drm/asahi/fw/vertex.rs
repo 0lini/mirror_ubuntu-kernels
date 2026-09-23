@@ -3,8 +3,17 @@
 //! GPU vertex job firmware structures
 
 use super::types::*;
-use super::{event, job, workqueue};
-use crate::{buffer, fw, microseq, mmu};
+use super::{
+    event,
+    job,
+    workqueue, //
+};
+use crate::{
+    buffer,
+    fw,
+    microseq,
+    mmu, //
+};
 use kernel::sync::Arc;
 
 pub(crate) mod raw {

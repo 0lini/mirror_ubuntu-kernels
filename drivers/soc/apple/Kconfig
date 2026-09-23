@@ -17,7 +17,6 @@ config APPLE_MAILBOX
 	tristate "Apple SoC mailboxes"
 	depends on PM
 	depends on ARCH_APPLE || (64BIT && COMPILE_TEST)
-	default ARCH_APPLE
 	help
 	  Apple SoCs have various co-processors required for certain
 	  peripherals to work (NVMe, display controller, etc.). This
@@ -38,7 +37,6 @@ config APPLE_RTKIT
 	tristate "Apple RTKit co-processor IPC protocol"
 	depends on APPLE_MAILBOX
 	depends on ARCH_APPLE || COMPILE_TEST
-	default ARCH_APPLE
 	help
 	  Apple SoCs such as the M1 come with various co-processors running
 	  their proprietary RTKit operating system. This option enables support
@@ -63,7 +61,6 @@ config APPLE_RTKIT_HELPER
 config APPLE_SART
 	tristate "Apple SART DMA address filter"
 	depends on ARCH_APPLE || COMPILE_TEST
-	default ARCH_APPLE
 	help
 	  Apple SART is a simple DMA address filter used on Apple SoCs such
 	  as the M1. It is usually required for the NVMe coprocessor which does
@@ -71,14 +68,26 @@ config APPLE_SART
 
 	  Say 'y' here if you have an Apple SoC.
 
+config APPLE_TUNABLE
+	tristate
+	depends on ARCH_APPLE || COMPILE_TEST
+
+config RUST_APPLE_MAILBOX
+	bool
+	depends on PM
+	depends on RUST
+	select APPLE_MAILBOX
+
 config RUST_APPLE_RTKIT
 	bool
+	depends on PM
 	depends on RUST
-	depends on APPLE_RTKIT
+	select APPLE_RTKIT
 
 config APPLE_AOP
 	tristate "Apple \"Always-on\" Processor"
 	depends on ARCH_APPLE || COMPILE_TEST
+	depends on PM
 	depends on RUST
 	select RUST_APPLE_RTKIT
 	help
@@ -90,11 +99,26 @@ config APPLE_AOP
 config APPLE_SEP
 	tristate "Apple Secure Element Processor"
 	depends on ARCH_APPLE || COMPILE_TEST
+	depends on PM
 	depends on RUST
 	select RUST_APPLE_RTKIT
+	select RUST_APPLE_MAILBOX
 	help
 	  A security co-processor persent on Apple SoCs, controlling transparent
 	  disk encryption, secure boot, HDCP, biometric auth and probably more.
+
+	  Say 'y' here if you have an Apple SoC.
+
+config APPLE_PMP
+	tristate "Apple Power Management Processor"
+	depends on ARCH_APPLE || COMPILE_TEST
+	depends on RUST
+	select APPLE_PMP_REPORT
+	select RUST_APPLE_RTKIT
+	default y if ARCH_APPLE
+	help
+	  A co-processor present on Apple SoCs, controlling power states of
+	  fabric and other uncore components.
 
 	  Say 'y' here if you have an Apple SoC.
 

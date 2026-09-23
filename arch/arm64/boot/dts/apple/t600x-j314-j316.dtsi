@@ -101,30 +101,42 @@
 	hdmi-pwren-gpios = <&smc_gpio 23 GPIO_ACTIVE_HIGH>;
 	dp2hdmi-pwren-gpios = <&smc_gpio 6 GPIO_ACTIVE_HIGH>;
 
-	phy-names = "dp-phy";
 	phys = <&atcphy3 PHY_TYPE_DP>;
 	phy-names = "dp-phy";
 	mux-controls = <&atcphy3_xbar 0>;
 	mux-control-names = "dp-xbar";
 	mux-index = <0>;
 	apple,dptx-phy = <3>;
+
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@1 {
+			reg = <1>;
+
+			decpext0_dpout: endpoint {
+				remote-endpoint = <&atcphy3_dp>;
+			};
+		};
+	};
 };
 
 /* remove once m1n1 enables sio nodes after setup */
 &sio {
-        status = "okay";
+	status = "okay";
 };
 
 &dpaudio1 {
 	status = "okay";
 };
 
-&atcphy3 {
-	apple,mode-fixed-dp;
-};
-
 &atcphy3_xbar {
 	status = "okay";
+};
+
+&ps_atc3_common {
+	apple,always-on; /* Needs to stay on for HDMI resume */
 };
 
 /* USB Type C */
@@ -147,14 +159,14 @@
 				#size-cells = <0>;
 				port@0 {
 					reg = <0>;
-					typec0_con_hs: endpoint {
-						remote-endpoint = <&typec0_usb_hs>;
+					typec0_connector_hs: endpoint {
+						remote-endpoint = <&dwc3_0_hs>;
 					};
 				};
 				port@1 {
 					reg = <1>;
-					typec0_con_ss: endpoint {
-						remote-endpoint = <&typec0_usb_ss>;
+					typec0_connector_ss: endpoint {
+						remote-endpoint = <&atcphy0_typec_lanes>;
 					};
 				};
 			};
@@ -179,14 +191,14 @@
 				#size-cells = <0>;
 				port@0 {
 					reg = <0>;
-					typec1_con_hs: endpoint {
-						remote-endpoint = <&typec1_usb_hs>;
+					typec1_connector_hs: endpoint {
+						remote-endpoint = <&dwc3_1_hs>;
 					};
 				};
 				port@1 {
 					reg = <1>;
-					typec1_con_ss: endpoint {
-						remote-endpoint = <&typec1_usb_ss>;
+					typec1_connector_ss: endpoint {
+						remote-endpoint = <&atcphy1_typec_lanes>;
 					};
 				};
 			};
@@ -211,14 +223,14 @@
 				#size-cells = <0>;
 				port@0 {
 					reg = <0>;
-					typec2_con_hs: endpoint {
-						remote-endpoint = <&typec2_usb_hs>;
+					typec2_connector_hs: endpoint {
+						remote-endpoint = <&dwc3_2_hs>;
 					};
 				};
 				port@1 {
 					reg = <1>;
-					typec2_con_ss: endpoint {
-						remote-endpoint = <&typec2_usb_ss>;
+					typec2_connector_ss: endpoint {
+						remote-endpoint = <&atcphy2_typec_lanes>;
 					};
 				};
 			};
@@ -352,7 +364,7 @@
 		 * SPI HID interface metadata specifies 45us. Using either
 		 * seems not to be reliable, but adding both works, so
 		 * best guess is they are cumulative.
-		*/
+		 */
 		spi-cs-setup-delay-ns = <65000>;
 		spi-cs-hold-delay-ns = <65000>;
 		spi-cs-inactive-delay-ns = <250000>;
@@ -406,50 +418,64 @@
 
 /* USB controllers */
 &dwc3_0 {
-	port {
-		typec0_usb_hs: endpoint {
-			remote-endpoint = <&typec0_con_hs>;
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			reg = <0>;
+			dwc3_0_hs: endpoint {
+				remote-endpoint = <&typec0_connector_hs>;
+			};
+		};
+
+		port@1 {
+			reg = <1>;
+			dwc3_0_ss: endpoint {
+				remote-endpoint = <&atcphy0_usb3>;
+			};
 		};
 	};
 };
 
 &dwc3_1 {
-	port {
-		typec1_usb_hs: endpoint {
-			remote-endpoint = <&typec1_con_hs>;
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			reg = <0>;
+			dwc3_1_hs: endpoint {
+				remote-endpoint = <&typec1_connector_hs>;
+			};
+		};
+
+		port@1 {
+			reg = <1>;
+			dwc3_1_ss: endpoint {
+				remote-endpoint = <&atcphy1_usb3>;
+			};
 		};
 	};
 };
 
 &dwc3_2 {
-	port {
-		typec2_usb_hs: endpoint {
-			remote-endpoint = <&typec2_con_hs>;
-		};
-	};
-};
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
 
-/* Type-C PHYs */
-&atcphy0 {
-	port {
-		typec0_usb_ss: endpoint {
-			remote-endpoint = <&typec0_con_ss>;
+		port@0 {
+			reg = <0>;
+			dwc3_2_hs: endpoint {
+				remote-endpoint = <&typec2_connector_hs>;
+			};
 		};
-	};
-};
 
-&atcphy1 {
-	port {
-		typec1_usb_ss: endpoint {
-			remote-endpoint = <&typec1_con_ss>;
-		};
-	};
-};
-
-&atcphy2 {
-	port {
-		typec2_usb_ss: endpoint {
-			remote-endpoint = <&typec2_con_ss>;
+		port@1 {
+			reg = <1>;
+			dwc3_2_ss: endpoint {
+				remote-endpoint = <&atcphy2_usb3>;
+			};
 		};
 	};
 };
@@ -457,10 +483,11 @@
 /*
  * ps_atc3_usb_aon power-domain is always-on to keep dwc3 working over suspend.
  * atc3 is used exclusively for the DP-to-HDMI so do not keep this always on.
+ * On t600x it is required to keep atc DP state over suspend.
  */
-&ps_atc3_usb_aon {
-	/delete-property/ apple,always-on;
-};
+// &ps_atc3_usb_aon {
+// 	/delete-property/ apple,always-on;
+// };
 
 /* ATC3 is used for DisplayPort -> HDMI only */
 &dwc3_3_dart_0 {
@@ -474,10 +501,89 @@
 &dwc3_3 {
 	status = "disabled";
 };
+
 /* Delete unused dwc3_3 to prevent dt_disable_missing_devs() from disabling
  * atcphy3 via phandle references from a disablecd device.
  */
 /delete-node/ &dwc3_3;
+
+/* Type-C PHYs */
+&atcphy0 {
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			reg = <0>;
+			atcphy0_typec_lanes: endpoint {
+				remote-endpoint = <&typec0_connector_ss>;
+			};
+		};
+
+		port@1 {
+			reg = <1>;
+			atcphy0_usb3: endpoint {
+				remote-endpoint = <&dwc3_0_ss>;
+			};
+		};
+	};
+};
+
+&atcphy1 {
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			reg = <0>;
+			atcphy1_typec_lanes: endpoint {
+				remote-endpoint = <&typec1_connector_ss>;
+			};
+		};
+
+		port@1 {
+			reg = <1>;
+			atcphy1_usb3: endpoint {
+				remote-endpoint = <&dwc3_1_ss>;
+			};
+		};
+	};
+};
+
+&atcphy2 {
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			reg = <0>;
+			atcphy2_typec_lanes: endpoint {
+				remote-endpoint = <&typec2_connector_ss>;
+			};
+		};
+
+		port@1 {
+			reg = <1>;
+			atcphy2_usb3: endpoint {
+				remote-endpoint = <&dwc3_2_ss>;
+			};
+		};
+	};
+};
+
+&atcphy3 {
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@2 {
+			reg = <2>;
+			atcphy3_dp: endpoint {
+				remote-endpoint = <&decpext0_dpout>;
+			};
+		};
+	};
+};
 
 &aop_mbox {
        status = "okay";
@@ -534,6 +640,10 @@
 
 &isp {
 	apple,platform-id = <3>;
+};
+
+&pmp_report_isp_sys {
+	status = "okay";
 };
 
 #include "hwmon-common.dtsi"

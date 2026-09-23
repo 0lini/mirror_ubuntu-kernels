@@ -14,7 +14,7 @@ use kernel::{
     soc::apple::aop::FakehidListener,
     sync::Arc,
     types::{ARef, ForeignOwnable},
-    ThisModule,
+    ThisModule, //
 };
 
 /// TODO: add documentation
@@ -98,7 +98,7 @@ impl<T: MessageProcessor + 'static> IIORegistration<T> {
         data: Arc<AopSensorData<T>>,
         name: &'static CStr,
         ty: u32,
-        info_mask: isize,
+        info_mask: usize,
         module: &ThisModule,
     ) -> Result<Self> {
         let spec = KBox::pin(

@@ -317,7 +317,7 @@ static int isp_ch_load_setfile(struct apple_isp *isp, u32 ch)
 	}
 
 	if (fw->size < setfile->size) {
-		dev_err(isp->dev, "setfile too small (0x%lx/0x%zx)\n", fw->size,
+		dev_err(isp->dev, "setfile too small (0x%zx/0x%zx)\n", fw->size,
 			setfile->size);
 		release_firmware(fw);
 		return -EINVAL;

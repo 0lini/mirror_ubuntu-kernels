@@ -27,6 +27,7 @@
 	brcm,board-type = "apple,canary";
 };
 
+/* enable PCIe port01 with SDHCI */
 &port01 {
 	pwren-gpios = <&smc_gpio 22 GPIO_ACTIVE_HIGH>;
 	status = "okay";

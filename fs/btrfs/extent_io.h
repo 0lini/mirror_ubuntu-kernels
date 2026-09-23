@@ -12,7 +12,6 @@
 #include <linux/rwsem.h>
 #include <linux/list.h>
 #include <linux/slab.h>
-#include "compression.h"
 #include "messages.h"
 #include "ulist.h"
 #include "misc.h"
@@ -201,7 +200,7 @@ static inline struct extent_changeset *extent_changeset_alloc(void)
 {
 	struct extent_changeset *ret;
 
-	ret = kmalloc(sizeof(*ret), GFP_KERNEL);
+	ret = kmalloc_obj(*ret);
 	if (!ret)
 		return NULL;
 
@@ -365,7 +364,8 @@ void btrfs_clear_buffer_dirty(struct btrfs_trans_handle *trans,
 
 int btrfs_alloc_page_array(unsigned int nr_pages, struct page **page_array,
 			   bool nofail);
-int btrfs_alloc_folio_array(unsigned int nr_folios, struct folio **folio_array);
+int btrfs_alloc_folio_array(unsigned int nr_folios, unsigned int order,
+			    struct folio **folio_array);
 
 #ifdef CONFIG_BTRFS_FS_RUN_SANITY_TESTS
 bool find_lock_delalloc_range(struct inode *inode,

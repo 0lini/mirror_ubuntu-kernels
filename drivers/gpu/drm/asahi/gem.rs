@@ -9,7 +9,12 @@
 
 use kernel::{
     drm,
-    drm::gem::{shmem, BaseDriverObject, BaseObject, OpaqueObject},
+    drm::gem::{
+        shmem,
+        shmem::VMap,
+        BaseObject,
+        DriverObject, //
+    },
     error::Result,
     prelude::*,
     types::ARef,
@@ -17,13 +22,20 @@ use kernel::{
 };
 
 use core::ops::Range;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{
+    AtomicU64,
+    Ordering, //
+};
 
 use crate::{
     debug::*,
-    driver::{AsahiDevice, AsahiDriver},
-    file, mmu,
-    util::*,
+    driver::{
+        AsahiDevice,
+        AsahiDriver, //
+    },
+    file,
+    mmu,
+    util::*, //
 };
 
 const DEBUG_CLASS: DebugFlags = DebugFlags::Gem;
@@ -55,7 +67,7 @@ pub(crate) struct ObjectRef {
     /// The underlying GEM object reference
     pub(crate) gem: ARef<Object>,
     /// The kernel-side VMap of this object, if needed
-    vmap: Option<shmem::VMap<AsahiObject>>,
+    vmap: Option<VMap<AsahiObject, u8>>,
 }
 
 crate::no_debug!(ObjectRef);
@@ -69,11 +81,11 @@ impl ObjectRef {
     }
 
     /// Return the `VMap` for this object, creating it if necessary.
-    pub(crate) fn vmap(&mut self) -> Result<&mut shmem::VMap<AsahiObject>> {
+    pub(crate) fn vmap(&mut self) -> Result<shmem::VMapRef<'_, AsahiObject, u8>> {
         if self.vmap.is_none() {
-            self.vmap = Some(self.gem.vmap()?);
+            self.vmap = Some(self.gem.owned_vmap()?);
         }
-        Ok(self.vmap.as_mut().unwrap())
+        self.gem.vmap()
     }
 
     /// Returns the size of an object in bytes
@@ -111,7 +123,7 @@ impl ObjectRef {
             return Err(EINVAL);
         }
         if self.gem.flags & uapi::drm_asahi_gem_flags_DRM_ASAHI_GEM_VM_PRIVATE != 0
-            && vm.is_extobj(self.gem.as_ref())
+            && vm.is_extobj(&*self.gem)
         {
             return Err(EINVAL);
         }
@@ -129,7 +141,7 @@ impl ObjectRef {
         guard: bool,
     ) -> Result<crate::mmu::KernelMapping> {
         if self.gem.flags & uapi::drm_asahi_gem_flags_DRM_ASAHI_GEM_VM_PRIVATE != 0
-            && vm.is_extobj(self.gem.as_ref())
+            && vm.is_extobj(&*self.gem)
         {
             return Err(EINVAL);
         }
@@ -169,7 +181,7 @@ pub(crate) fn new_object(
     dev: &AsahiDevice,
     size: usize,
     flags: u32,
-    parent_object: Option<&OpaqueObject<AsahiDriver>>,
+    parent_object: Option<&shmem::Object<AsahiObject>>,
 ) -> Result<ARef<Object>> {
     if (flags & uapi::drm_asahi_gem_flags_DRM_ASAHI_GEM_VM_PRIVATE != 0) != parent_object.is_some()
     {
@@ -195,10 +207,8 @@ pub(crate) fn new_object(
 }
 
 #[vtable]
-impl BaseDriverObject for AsahiObject {
+impl DriverObject for AsahiObject {
     type Driver = AsahiDriver;
-    // type Object = drm::gem::Object<Self>;
-    type Object = shmem::Object<Self>;
     type Args = AsahiObjConfig;
 
     const HAS_EXPORT: bool = true;
@@ -216,7 +226,7 @@ impl BaseDriverObject for AsahiObject {
     }
 
     /// Callback to drop all mappings for a GEM object owned by a given `File`
-    fn close(obj: &Self::Object, file: &drm::gem::DriverFile<Self>) {
+    fn close(obj: &<Self::Driver as drm::Driver>::Object, file: &drm::gem::DriverFile<Self>) {
         // fn close(obj: &Object, file: &DrmFile) {
         mod_pr_debug!("AsahiObject::close id={}\n", obj.id);
         if file::File::unbind_gem_object(file, obj).is_err() {
@@ -225,7 +235,10 @@ impl BaseDriverObject for AsahiObject {
     }
 
     /// Optional handle for exporting a gem object.
-    fn export(obj: &Self::Object, flags: u32) -> Result<drm::gem::DmaBuf<Self::Object>> {
+    fn export(
+        obj: &<Self::Driver as drm::Driver>::Object,
+        flags: u32,
+    ) -> Result<drm::gem::DmaBuf<Object>> {
         if !obj.exportable {
             return Err(EINVAL);
         }

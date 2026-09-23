@@ -3,8 +3,15 @@
 //! GPU compute job firmware structures
 
 use super::types::*;
-use super::{event, job, workqueue};
-use crate::{microseq, mmu};
+use super::{
+    event,
+    job,
+    workqueue, //
+};
+use crate::{
+    microseq,
+    mmu, //
+};
 use kernel::sync::Arc;
 
 pub(crate) mod raw {

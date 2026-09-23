@@ -99,7 +99,6 @@ int br_switchdev_set_port_flag(struct net_bridge_port *p,
 	attr.u.brport_flags.val = flags;
 	attr.u.brport_flags.mask = mask;
 
-	/* We run from atomic context here */
 	err = call_switchdev_notifiers(SWITCHDEV_PORT_ATTR_SET, p->dev,
 				       &info.info, extack);
 	err = notifier_to_errno(err);
@@ -661,7 +660,7 @@ void br_switchdev_mdb_notify(struct net_device *dev,
 	mdb.obj.orig_dev = pg->key.port->dev;
 	switch (type) {
 	case RTM_NEWMDB:
-		complete_info = kmalloc(sizeof(*complete_info), GFP_ATOMIC);
+		complete_info = kmalloc_obj(*complete_info, GFP_ATOMIC);
 		if (!complete_info)
 			break;
 		complete_info->port = pg->key.port;

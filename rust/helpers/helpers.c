@@ -7,9 +7,15 @@
  * Sorted alphabetically.
  */
 
+#define __rust_helper
+
 #include "atomic.c"
+#include "atomic_ext.c"
 #include "auxiliary.c"
 #include "barrier.c"
+#include "binder.c"
+#include "bitmap.c"
+#include "bitops.c"
 #include "blk.c"
 #include "bug.c"
 #include "build_assert.c"
@@ -29,8 +35,10 @@
 #include "drm_gpuvm.c"
 #include "drm_syncobj.c"
 #include "err.c"
+#include "irq.c"
 #include "fs.c"
 #include "io.c"
+#include "iosys_map.c"
 #include "jump_label.c"
 #include "kunit.c"
 #include "maple_tree.c"
@@ -42,7 +50,9 @@
 #include "pid_namespace.c"
 #include "platform.c"
 #include "poll.c"
+#include "processor.c"
 #include "property.c"
+#include "pwm.c"
 #include "rbtree.c"
 #include "rcu.c"
 #include "refcount.c"
@@ -56,6 +66,7 @@
 #include "task.c"
 #include "time.c"
 #include "uaccess.c"
+#include "usb.c"
 #include "vmalloc.c"
 #include "wait.c"
 #include "workqueue.c"

@@ -162,7 +162,7 @@ static int of_load_pse_pis(struct pse_controller_dev *pcdev)
 	if (!np)
 		return -ENODEV;
 
-	pcdev->pi = kcalloc(pcdev->nr_lines, sizeof(*pcdev->pi), GFP_KERNEL);
+	pcdev->pi = kzalloc_objs(*pcdev->pi, pcdev->nr_lines);
 	if (!pcdev->pi)
 		return -ENOMEM;
 
@@ -210,7 +210,7 @@ static int of_load_pse_pis(struct pse_controller_dev *pcdev)
 			ret = of_load_pse_pi_pairsets(node, &pi, ret);
 			if (ret)
 				goto out;
-		} else if (ret != ENOENT) {
+		} else if (ret != -ENOENT) {
 			dev_err(pcdev->dev,
 				"error: wrong number of pairsets. Should be 1 or 2, got %d (%pOF)\n",
 				ret, node);
@@ -1408,7 +1408,7 @@ pse_control_get_internal(struct pse_controller_dev *pcdev, unsigned int index,
 		}
 	}
 
-	psec = kzalloc(sizeof(*psec), GFP_KERNEL);
+	psec = kzalloc_obj(*psec);
 	if (!psec)
 		return ERR_PTR(-ENOMEM);
 

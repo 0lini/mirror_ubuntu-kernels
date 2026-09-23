@@ -14,22 +14,40 @@
 use core::any::Any;
 use core::ops::Range;
 use core::slice;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{
+    AtomicBool,
+    AtomicU64,
+    Ordering, //
+};
 
 use kernel::{
     c_str,
+    drm::gem::shmem,
     error::code::*,
-    io::mem::{Mem, MemFlags},
+    io::mem::{
+        Mem,
+        MemFlag, //
+    },
+    iosys_map::IoSysMapRef,
     macros::versions,
     new_mutex,
     prelude::*,
     soc::apple::rtkit,
     sync::{
-        lock::{mutex::MutexBackend, Guard},
-        Arc, Mutex, UniqueArc,
+        lock::{
+            mutex::MutexBackend,
+            Guard, //
+        },
+        Arc,
+        Mutex,
+        UniqueArc, //
     },
-    time::{Delta, Instant, Monotonic},
-    types::ForeignOwnable,
+    time::{
+        Delta,
+        Instant,
+        Monotonic, //
+    },
+    types::ForeignOwnable, //
 };
 #[cfg(CONFIG_DEV_COREDUMP)]
 use kernel::{
@@ -39,11 +57,32 @@ use kernel::{
 
 use crate::alloc::Allocator;
 use crate::debug::*;
-use crate::driver::{AsahiDevRef, AsahiDevice};
-use crate::fw::channels::{ChannelErrorType, PipeType};
-use crate::fw::types::{U32, U64};
+use crate::driver::{
+    AsahiDevRef,
+    AsahiDevice, //
+};
+use crate::fw::channels::{
+    ChannelErrorType,
+    PipeType, //
+};
+use crate::fw::types::{
+    U32,
+    U64, //
+};
 use crate::{
-    alloc, buffer, channel, event, fw, gem, hw, initdata, mem, mmu, queue, regs, workqueue,
+    alloc,
+    buffer,
+    channel,
+    event,
+    fw,
+    gem,
+    hw,
+    initdata,
+    mem,
+    mmu,
+    queue,
+    regs,
+    workqueue, //
 };
 
 const DEBUG_CLASS: DebugFlags = DebugFlags::Gpu;
@@ -300,7 +339,7 @@ trait GpuManagerPriv {
 }
 
 pub(crate) struct RtkitObject {
-    obj: gem::ObjectRef,
+    vmap: shmem::VMap<gem::AsahiObject, u8>,
     mapping: mmu::KernelMapping,
 }
 
@@ -308,9 +347,8 @@ impl rtkit::Buffer for RtkitObject {
     fn iova(&self) -> Result<usize> {
         Ok(self.mapping.iova() as usize)
     }
-    fn buf(&mut self) -> Result<&mut [u8]> {
-        let vmap = self.obj.vmap()?;
-        Ok(vmap.as_mut_slice())
+    fn buf(&mut self) -> Result<IoSysMapRef<'_, u8>> {
+        Ok(self.vmap.get())
     }
 }
 
@@ -365,7 +403,7 @@ impl rtkit::Operations for GpuManager::ver {
         mod_dev_dbg!(dev, "shmem_alloc() {:#x} bytes\n", size);
 
         let mut obj = gem::new_kernel_object(dev, size)?;
-        obj.vmap()?;
+        let vmap = obj.gem.owned_vmap()?;
         let mapping = obj.map_into_range(
             data.uat.kernel_vm(),
             IOVA_KERN_RTKIT_RANGE,
@@ -374,7 +412,7 @@ impl rtkit::Operations for GpuManager::ver {
             true,
         )?;
         mod_dev_dbg!(dev, "shmem_alloc() -> VA {:#x}\n", mapping.iova());
-        Ok(RtkitObject { obj, mapping })
+        Ok(RtkitObject { vmap, mapping })
     }
 }
 
@@ -752,7 +790,7 @@ impl GpuManager::ver {
             .try_into()?;
         let res = of_node.reserved_mem_region_to_resource_byname(name)?;
         // SAFETY: No dma here, just loading init data.
-        let mem = unsafe { Mem::try_new(res, MemFlags::WB)? };
+        let mem = unsafe { Mem::try_new(res, (MemFlag::WB).into())? };
         if size > mem.size() {
             return Err(ENOENT);
         }
@@ -860,16 +898,16 @@ impl GpuManager::ver {
             return Err(EIO);
         }
 
-        #[cfg(CONFIG_DEV_COREDUMP)]
-        let node = dev.as_ref().of_node().ok_or(EIO)?;
+        let fwnode = dev.as_ref().fwnode().ok_or(ENOENT)?;
 
         Ok(KBox::new(
             hw::DynConfig {
                 pwr: pwr_cfg,
                 uat_ttb_base: uat.ttb_base(),
                 id: gpu_id,
-                #[cfg(CONFIG_DEV_COREDUMP)]
-                firmware_version: node.get_property(c_str!("apple,firmware-version"))?,
+                firmware_version: fwnode
+                    .property_read_array_vec(c_str!("apple,firmware-version"), 3)?
+                    .or(kernel::kvec![0; 3]?),
 
                 hw_data_a: Self::load_hwdata_blob(
                     dev,
@@ -1080,7 +1118,7 @@ impl GpuManager::ver {
         mod_dev_dbg!(self.dev, "GPU: run_job: ring doorbell\n");
 
         let mut guard = self.rtkit.lock();
-        let rtk = guard.as_mut().unwrap();
+        let rtk = guard.as_mut().as_pin_mut().unwrap();
         rtk.send_message(
             EP_DOORBELL,
             MSG_TX_DOORBELL | pipe_type as u64 | ((index as u64) << 2),
@@ -1151,7 +1189,7 @@ impl GpuManager::ver {
 
         {
             let mut guard = self.rtkit.lock();
-            let rtk = guard.as_mut().unwrap();
+            let rtk = guard.as_mut().as_pin_mut().unwrap();
             rtk.send_message(EP_DOORBELL, MSG_TX_DOORBELL | DOORBELL_DEVCTRL)?;
         }
 
@@ -1214,13 +1252,15 @@ impl GpuManager for GpuManager::ver {
 
         let initdata = self.initdata.gpu_va().get();
         let mut guard = self.rtkit.lock();
-        let rtk = guard.as_mut().unwrap();
+        let mut rtk = guard.as_mut().as_pin_mut().unwrap();
 
-        rtk.boot()?;
-        rtk.start_endpoint(EP_FIRMWARE)?;
-        rtk.start_endpoint(EP_DOORBELL)?;
-        rtk.send_message(EP_FIRMWARE, MSG_INIT | (initdata & INIT_DATA_MASK))?;
-        rtk.send_message(EP_DOORBELL, MSG_TX_DOORBELL | DOORBELL_DEVCTRL)?;
+        rtk.as_mut().boot()?;
+        rtk.as_mut().start_endpoint(EP_FIRMWARE)?;
+        rtk.as_mut().start_endpoint(EP_DOORBELL)?;
+        rtk.as_mut()
+            .send_message(EP_FIRMWARE, MSG_INIT | (initdata & INIT_DATA_MASK))?;
+        rtk.as_mut()
+            .send_message(EP_DOORBELL, MSG_TX_DOORBELL | DOORBELL_DEVCTRL)?;
         core::mem::drop(guard);
 
         self.kick_firmware()?;
@@ -1326,7 +1366,7 @@ impl GpuManager for GpuManager::ver {
         }
 
         let mut guard = self.rtkit.lock();
-        let rtk = guard.as_mut().unwrap();
+        let rtk = guard.as_mut().as_pin_mut().unwrap();
         rtk.send_message(EP_DOORBELL, MSG_TX_DOORBELL | DOORBELL_KICKFW)?;
 
         Ok(())
@@ -1367,7 +1407,7 @@ impl GpuManager for GpuManager::ver {
         let token = txch.device_control.send(&dc);
         {
             let mut guard = self.rtkit.lock();
-            let rtk = guard.as_mut().unwrap();
+            let rtk = guard.as_mut().as_pin_mut().unwrap();
             rtk.send_message(EP_DOORBELL, MSG_TX_DOORBELL | DOORBELL_DEVCTRL)?;
         }
 
@@ -1477,7 +1517,7 @@ impl GpuManager for GpuManager::ver {
         let token = txch.device_control.send(&dc);
         {
             let mut guard = self.rtkit.lock();
-            let rtk = guard.as_mut().unwrap();
+            let rtk = guard.as_mut().as_pin_mut().unwrap();
             if rtk
                 .send_message(EP_DOORBELL, MSG_TX_DOORBELL | DOORBELL_DEVCTRL)
                 .is_err()
@@ -1524,7 +1564,7 @@ impl GpuManager for GpuManager::ver {
         txch.device_control.send(&dc);
         {
             let mut guard = self.rtkit.lock();
-            let rtk = guard.as_mut().unwrap();
+            let rtk = guard.as_mut().as_pin_mut().unwrap();
             if rtk
                 .send_message(EP_DOORBELL, MSG_TX_DOORBELL | DOORBELL_DEVCTRL)
                 .is_err()
@@ -1543,7 +1583,7 @@ impl GpuManager for GpuManager::ver {
         let token = fwctl.send(&msg);
         {
             let mut guard = self.rtkit.lock();
-            let rtk = guard.as_mut().unwrap();
+            let rtk = guard.as_mut().as_pin_mut().unwrap();
             rtk.send_message(EP_DOORBELL, MSG_FWCTL)?;
         }
         fwctl.wait_for(token)?;

@@ -9,14 +9,26 @@
 use core::fmt::Debug;
 use core::mem::size_of;
 use core::ops::Range;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{
+    AtomicU64,
+    Ordering, //
+};
 
+use kernel::{
+    addr::PhysicalAddr,
+    error::Result,
+    page::Page,
+    prelude::*, //
+};
 #[cfg(CONFIG_DEV_COREDUMP)]
 use kernel::{
-    uapi::{PF_R, PF_W, PF_X},
     types::Owned,
+    uapi::{
+        PF_R,
+        PF_W,
+        PF_X, //
+    },
 };
-use kernel::{addr::PhysicalAddr, error::Result, page::Page, prelude::*};
 
 use crate::debug::*;
 use crate::util::align;
@@ -259,11 +271,7 @@ impl UatPageTable {
         })
     }
 
-    pub(crate) fn new_with_ttb(
-        ttb: PhysicalAddr,
-        va_range: Range<u64>,
-        oas: u32,
-    ) -> Result<Self> {
+    pub(crate) fn new_with_ttb(ttb: PhysicalAddr, va_range: Range<u64>, oas: u32) -> Result<Self> {
         mod_pr_debug!(
             "UATPageTable::new_with_ttb: ttb={:#x} range={:#x?} oas={}\n",
             ttb,

@@ -42,7 +42,7 @@ module_param(debug, int, 0644);
 MODULE_PARM_DESC(debug, "debug level (0-2)");
 
 MODULE_DESCRIPTION("Analog Devices ADV7604/10/11/12 video decoder driver");
-MODULE_AUTHOR("Hans Verkuil <hansverk@cisco.com>");
+MODULE_AUTHOR("Hans Verkuil <hverkuil@kernel.org>");
 MODULE_AUTHOR("Mats Randgaard <mats.randgaard@cisco.com>");
 MODULE_LICENSE("GPL");
 
@@ -3453,7 +3453,13 @@ static int configure_regmaps(struct adv76xx_state *state)
 static void adv76xx_reset(struct adv76xx_state *state)
 {
 	if (state->reset_gpio) {
-		/* ADV76XX can be reset by a low reset pulse of minimum 5 ms. */
+		/*
+		 * Note: Misinterpretation of reset assertion - do not re-use
+		 * this code.  The reset pin is using incorrect (for a reset
+		 * signal) logical level.
+		 *
+		 * ADV76XX can be reset by a low reset pulse of minimum 5 ms.
+		 */
 		gpiod_set_value_cansleep(state->reset_gpio, 0);
 		usleep_range(5000, 10000);
 		gpiod_set_value_cansleep(state->reset_gpio, 1);

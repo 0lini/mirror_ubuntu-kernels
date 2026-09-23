@@ -259,7 +259,7 @@ static void hv_kmsg_dump_register(void)
 
 static inline bool hv_output_page_exists(void)
 {
-	return hv_root_partition() || IS_ENABLED(CONFIG_HYPERV_VTL_MODE);
+	return hv_parent_partition() || IS_ENABLED(CONFIG_HYPERV_VTL_MODE);
 }
 
 void __init hv_get_partition_id(void)
@@ -317,9 +317,9 @@ int __init hv_common_init(void)
 	int i;
 	union hv_hypervisor_version_info version;
 
-	/* Get information about the Hyper-V host version */
+	/* Get information about the Microsoft Hypervisor version */
 	if (!hv_get_hypervisor_version(&version))
-		pr_info("Hyper-V: Host Build %d.%d.%d.%d-%d-%d\n",
+		pr_info("Hyper-V: Hypervisor Build %d.%d.%d.%d-%d-%d\n",
 			version.major_version, version.minor_version,
 			version.build_number, version.service_number,
 			version.service_pack, version.service_branch);
@@ -379,7 +379,7 @@ int __init hv_common_init(void)
 		BUG_ON(!hyperv_pcpu_output_arg);
 	}
 
-	if (hv_root_partition()) {
+	if (hv_parent_partition()) {
 		hv_synic_eventring_tail = alloc_percpu(u8 *);
 		BUG_ON(!hv_synic_eventring_tail);
 	}
@@ -489,7 +489,7 @@ int hv_common_cpu_init(unsigned int cpu)
 	 * online and then taken offline
 	 */
 	if (!*inputarg) {
-		mem = kmalloc(pgcount * HV_HYP_PAGE_SIZE, flags);
+		mem = kmalloc_array(pgcount, HV_HYP_PAGE_SIZE, flags);
 		if (!mem)
 			return -ENOMEM;
 
@@ -533,7 +533,7 @@ int hv_common_cpu_init(unsigned int cpu)
 	if (msr_vp_index > hv_max_vp_index)
 		hv_max_vp_index = msr_vp_index;
 
-	if (hv_root_partition()) {
+	if (hv_parent_partition()) {
 		synic_eventring_tail = (u8 **)this_cpu_ptr(hv_synic_eventring_tail);
 		*synic_eventring_tail = kcalloc(HV_SYNIC_SINT_COUNT,
 						sizeof(u8), flags);
@@ -560,7 +560,7 @@ int hv_common_cpu_die(unsigned int cpu)
 	 * originally allocated memory is reused in hv_common_cpu_init().
 	 */
 
-	if (hv_root_partition()) {
+	if (hv_parent_partition()) {
 		synic_eventring_tail = this_cpu_ptr(hv_synic_eventring_tail);
 		kfree(*synic_eventring_tail);
 		*synic_eventring_tail = NULL;
@@ -718,6 +718,27 @@ u64 __weak hv_tdx_hypercall(u64 control, u64 param1, u64 param2)
 }
 EXPORT_SYMBOL_GPL(hv_tdx_hypercall);
 
+void __weak hv_enable_coco_interrupt(unsigned int cpu, unsigned int vector, bool set)
+{
+}
+EXPORT_SYMBOL_GPL(hv_enable_coco_interrupt);
+
+void __weak hv_para_set_sint_proxy(bool enable)
+{
+}
+EXPORT_SYMBOL_GPL(hv_para_set_sint_proxy);
+
+u64 __weak hv_para_get_synic_register(unsigned int reg)
+{
+	return ~0ULL;
+}
+EXPORT_SYMBOL_GPL(hv_para_get_synic_register);
+
+void __weak hv_para_set_synic_register(unsigned int reg, u64 val)
+{
+}
+EXPORT_SYMBOL_GPL(hv_para_set_synic_register);
+
 void hv_identify_partition_type(void)
 {
 	/* Assume guest role */
@@ -731,13 +752,17 @@ void hv_identify_partition_type(void)
 	 * the root partition setting if also a Confidential VM.
 	 */
 	if ((ms_hyperv.priv_high & HV_CREATE_PARTITIONS) &&
-	    (ms_hyperv.priv_high & HV_CPU_MANAGEMENT) &&
 	    !(ms_hyperv.priv_high & HV_ISOLATION)) {
-		pr_info("Hyper-V: running as root partition\n");
-		if (IS_ENABLED(CONFIG_MSHV_ROOT))
-			hv_curr_partition_type = HV_PARTITION_TYPE_ROOT;
-		else
+
+		if (!IS_ENABLED(CONFIG_MSHV_ROOT)) {
 			pr_crit("Hyper-V: CONFIG_MSHV_ROOT not enabled!\n");
+		} else if (ms_hyperv.priv_high & HV_CPU_MANAGEMENT) {
+			pr_info("Hyper-V: running as root partition\n");
+			hv_curr_partition_type = HV_PARTITION_TYPE_ROOT;
+		} else {
+			pr_info("Hyper-V: running as L1VH partition\n");
+			hv_curr_partition_type = HV_PARTITION_TYPE_L1VH;
+		}
 	}
 }
 
@@ -768,6 +793,9 @@ static const struct hv_status_info hv_status_infos[] = {
 	_STATUS_INFO(HV_STATUS_UNKNOWN_PROPERTY,		-EIO),
 	_STATUS_INFO(HV_STATUS_PROPERTY_VALUE_OUT_OF_RANGE,	-EIO),
 	_STATUS_INFO(HV_STATUS_INSUFFICIENT_MEMORY,		-ENOMEM),
+	_STATUS_INFO(HV_STATUS_INSUFFICIENT_CONTIGUOUS_MEMORY,	-ENOMEM),
+	_STATUS_INFO(HV_STATUS_INSUFFICIENT_ROOT_MEMORY,	-ENOMEM),
+	_STATUS_INFO(HV_STATUS_INSUFFICIENT_CONTIGUOUS_ROOT_MEMORY,	-ENOMEM),
 	_STATUS_INFO(HV_STATUS_INVALID_PARTITION_ID,		-EINVAL),
 	_STATUS_INFO(HV_STATUS_INVALID_VP_INDEX,		-EINVAL),
 	_STATUS_INFO(HV_STATUS_NOT_FOUND,			-EIO),

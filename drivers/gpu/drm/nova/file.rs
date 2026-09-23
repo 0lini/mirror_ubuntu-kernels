@@ -33,7 +33,7 @@ impl File {
         _file: &drm::File<File>,
     ) -> Result<u32> {
         let adev = &dev.adev;
-        let parent = adev.parent().ok_or(ENOENT)?;
+        let parent = adev.parent();
         let pdev: &pci::Device = parent.try_into()?;
 
         let value = match getparam.param as u32 {
@@ -41,7 +41,7 @@ impl File {
             _ => return Err(EINVAL),
         };
 
-        getparam.value = value;
+        getparam.value = Into::<u64>::into(value);
 
         Ok(0)
     }

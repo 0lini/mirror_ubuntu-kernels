@@ -11,12 +11,19 @@
 
 use crate::debug::*;
 use crate::fw::types::*;
-use crate::{gpu, slotalloc, workqueue};
+use crate::{
+    gpu,
+    slotalloc,
+    workqueue, //
+};
 use core::cmp;
 use core::sync::atomic::Ordering;
 use kernel::prelude::*;
 use kernel::sync::Arc;
-use kernel::{c_str, static_lock_class};
+use kernel::{
+    c_str,
+    static_lock_class, //
+};
 
 const DEBUG_CLASS: DebugFlags = DebugFlags::Event;
 

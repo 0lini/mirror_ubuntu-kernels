@@ -6,8 +6,8 @@
 #ifndef _ISP4_DEBUG_H_
 #define _ISP4_DEBUG_H_
 
-#include <linux/printk.h>
 #include <linux/dev_printk.h>
+#include <linux/printk.h>
 
 #include "isp4_subdev.h"
 
@@ -38,4 +38,4 @@ char *isp4dbg_get_buf_src_str(u32 src);
 char *isp4dbg_get_buf_done_str(u32 status);
 char *isp4dbg_get_if_stream_str(u32 stream);
 
-#endif
+#endif /* _ISP4_DEBUG_H_ */

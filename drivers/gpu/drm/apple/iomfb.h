@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only OR MIT
-/* Copyright 2021 Alyssa Rosenzweig <alyssa@rosenzweig.io> */
+/* Copyright 2021 Alyssa Rosenzweig */
 
 #ifndef __APPLE_DCPEP_H__
 #define __APPLE_DCPEP_H__
@@ -46,6 +46,15 @@ enum dcpep_type {
 	IOMFB_MESSAGE_TYPE_MSG = 2,
 };
 
+/*
+ * IOMFB supports the setting of a number of parameters
+ * that alter various aspects of the connected sink's
+ * behaviour at runtime.
+ */
+enum iomfb_parameter {
+	IOMFBPARAM_ADAPTIVE_SYNC = 14,
+};
+
 #define IOMFB_MESSAGE_TYPE	GENMASK_ULL( 3,  0)
 
 /* Message */
@@ -79,18 +88,6 @@ enum iomfb_property_id {
 #define SWAP_SURFACES 4
 /* We have 4 surfaces, but we can only ever blend two */
 #define MAX_BLEND_SURFACES 2
-#define MAX_PLANES 3
-
-enum dcp_colorspace {
-	DCP_COLORSPACE_BG_SRGB = 0,
-	DCP_COLORSPACE_BG_BT2020 = 9,
-	DCP_COLORSPACE_NATIVE = 12,
-};
-
-enum dcp_xfer_func {
-	DCP_XFER_FUNC_SDR = 13,
-	DCP_XFER_FUNC_HDR = 16,
-};
 
 struct dcp_iouserclient {
 	/* Handle for the IOUserClient. macOS sets this to a kernel VA. */
@@ -101,36 +98,10 @@ struct dcp_iouserclient {
 	u8 padding[2];
 } __packed;
 
-struct dcp_rect {
-	u32 x;
-	u32 y;
-	u32 w;
-	u32 h;
-} __packed;
-
 /*
  * Update background color to struct dcp_swap.bg_color
  */
 #define IOMFB_SET_BACKGROUND	BIT(31)
-
-/* Information describing a plane of a planar compressed surface */
-struct dcp_plane_info {
-	u32 width;
-	u32 height;
-	u32 base;
-	u32 offset;
-	u32 stride;
-	u32 size;
-	u16 tile_size;
-	u8 tile_w;
-	u8 tile_h;
-	u32 unk[13];
-} __packed;
-
-struct dcp_component_types {
-	u8 count;
-	u8 types[7];
-} __packed;
 
 struct dcp_allocate_bandwidth_req {
 	u64 unk1;
@@ -406,10 +377,8 @@ struct iomfb_abort_swaps_dcp_resp {
 } __packed;
 
 struct iomfb_set_matrix_req {
-	u32 unk_u32; // maybe length?
-	u64 r[3];
-	u64 g[3];
-	u64 b[3];
+	u32 location;
+	u64 matrix[9];
 	u8 matrix_null;
 	u8 padding[3];
 } __packed;

@@ -3,8 +3,9 @@
 use kernel::{
     drm,
     drm::{gem, gem::BaseObject},
+    page,
     prelude::*,
-    types::ARef,
+    sync::aref::ARef,
 };
 
 use crate::{
@@ -17,9 +18,8 @@ use crate::{
 pub(crate) struct NovaObject {}
 
 #[vtable]
-impl gem::BaseDriverObject for NovaObject {
+impl gem::DriverObject for NovaObject {
     type Driver = NovaDriver;
-    type Object = gem::Object<Self>;
     type Args = ();
 
     fn new(_dev: &NovaDevice, _size: usize, _args: Self::Args) -> impl PinInit<Self, Error> {
@@ -30,11 +30,10 @@ impl gem::BaseDriverObject for NovaObject {
 impl NovaObject {
     /// Create a new DRM GEM object.
     pub(crate) fn new(dev: &NovaDevice, size: usize) -> Result<ARef<gem::Object<Self>>> {
-        let aligned_size = size.next_multiple_of(1 << 12);
-
-        if size == 0 || size > aligned_size {
+        if size == 0 {
             return Err(EINVAL);
         }
+        let aligned_size = page::page_align(size).ok_or(EINVAL)?;
 
         gem::Object::new(dev, aligned_size, ())
     }

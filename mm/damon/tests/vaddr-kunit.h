@@ -141,13 +141,13 @@ static void damon_do_test_apply_three_regions(struct kunit *test,
 	for (i = 0; i < nr_regions / 2; i++) {
 		r = damon_new_region(regions[i * 2], regions[i * 2 + 1]);
 		if (!r) {
-			damon_destroy_target(t);
+			damon_destroy_target(t, NULL);
 			kunit_skip(test, "region alloc fail");
 		}
 		damon_add_region(r, t);
 	}
 
-	damon_set_regions(t, three_regions, 3);
+	damon_set_regions(t, three_regions, 3, DAMON_MIN_REGION_SZ);
 
 	for (i = 0; i < nr_expected / 2; i++) {
 		r = __nth_region_of(t, i);

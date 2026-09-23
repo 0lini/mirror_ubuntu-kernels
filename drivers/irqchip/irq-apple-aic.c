@@ -54,7 +54,6 @@
 #include <linux/irqdomain.h>
 #include <linux/jump_label.h>
 #include <linux/limits.h>
-#include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/slab.h>
 #include <asm/apple_m1_pmu.h>
@@ -135,8 +134,12 @@
 
 #define AIC2_IRQ_CFG		0x2000
 
+/* AIC v3 registers (MMIO) */
+#define AIC3_IRQ_CFG		0x10000
+
 /*
  * AIC2 registers are laid out like this, starting at AIC2_IRQ_CFG:
+ * AIC3 registers use the same layout but start at AIC3_IRQ_CFG:
  *
  * Repeat for each die:
  *   IRQ_CFG: u32 * MAX_IRQS
@@ -252,9 +255,6 @@ struct aic_info {
 	u32 mask_set;
 	u32 mask_clr;
 
-	u32 cap0_off;
-	u32 maxnumirq_off;
-
 	u32 die_stride;
 
 	/* Features */
@@ -292,14 +292,15 @@ static const struct aic_info aic2_info __initconst = {
 	.version	= 2,
 
 	.irq_cfg	= AIC2_IRQ_CFG,
-	.cap0_off	= AIC2_INFO1,
-	.maxnumirq_off	= AIC2_INFO3,
 
 	.fast_ipi	= true,
+	.local_fast_ipi = true,
 };
 
 static const struct aic_info aic3_info __initconst = {
 	.version	= 3,
+
+	.irq_cfg	= AIC3_IRQ_CFG,
 
 	.fast_ipi	= true,
 	.local_fast_ipi = true,
@@ -323,7 +324,7 @@ static const struct of_device_id aic_info_match[] = {
 		.data = &aic2_info,
 	},
 	{
-		.compatible = "apple,aic3",
+		.compatible = "apple,t8122-aic3",
 		.data = &aic3_info,
 	},
 	{}
@@ -427,12 +428,15 @@ static void __exception_irq_entry aic_handle_irq(struct pt_regs *regs)
 	if (is_kernel_in_hyp_mode() &&
 	    (read_sysreg_s(SYS_ICH_HCR_EL2) & ICH_HCR_EL2_En) &&
 	    read_sysreg_s(SYS_ICH_MISR_EL2) != 0) {
+		u64 val;
+
 		generic_handle_domain_irq(aic_irqc->hw_domain,
 					  AIC_FIQ_HWIRQ(AIC_VGIC_MI));
 
 		if (unlikely((read_sysreg_s(SYS_ICH_HCR_EL2) & ICH_HCR_EL2_En) &&
-			     read_sysreg_s(SYS_ICH_MISR_EL2))) {
-			pr_err_ratelimited("vGIC IRQ fired and not handled by KVM, disabling.\n");
+			     (val = read_sysreg_s(SYS_ICH_MISR_EL2)))) {
+			pr_err_ratelimited("vGIC IRQ fired and not handled by KVM (MISR=%llx), disabling.\n",
+					   val);
 			sysreg_clear_set_s(SYS_ICH_HCR_EL2, ICH_HCR_EL2_En, 0);
 		}
 	}
@@ -594,16 +598,9 @@ static void __exception_irq_entry aic_handle_fiq(struct pt_regs *regs)
 	}
 
 	if ((read_sysreg_s(SYS_IMP_APL_PMCR0_EL1) & (PMCR0_IMODE | PMCR0_IACT)) ==
-			(FIELD_PREP(PMCR0_IMODE, PMCR0_IMODE_FIQ) | PMCR0_IACT)) {
-		int irq;
-		if (cpumask_test_cpu(smp_processor_id(),
-				     &aic_irqc->fiq_aff[AIC_CPU_PMU_P]->aff))
-			irq = AIC_CPU_PMU_P;
-		else
-			irq = AIC_CPU_PMU_E;
+			(FIELD_PREP(PMCR0_IMODE, PMCR0_IMODE_FIQ) | PMCR0_IACT))
 		generic_handle_domain_irq(aic_irqc->hw_domain,
-					  AIC_FIQ_HWIRQ(irq));
-	}
+					  AIC_FIQ_HWIRQ(AIC_CPU_PMU_P));
 
 	if (static_branch_likely(&use_fast_ipi) &&
 	    (FIELD_GET(UPMCR0_IMODE, read_sysreg_s(SYS_IMP_APL_UPMCR0_EL1)) == UPMCR0_IMODE_FIQ) &&
@@ -648,21 +645,37 @@ static int aic_irq_domain_map(struct irq_domain *id, unsigned int irq,
 				    handle_fasteoi_irq, NULL, NULL);
 		irqd_set_single_target(irq_desc_get_irq_data(irq_to_desc(irq)));
 	} else {
-		int fiq = FIELD_GET(AIC_EVENT_NUM, hw);
-
-		switch (fiq) {
-		case AIC_CPU_PMU_P:
-		case AIC_CPU_PMU_E:
-			irq_set_percpu_devid_partition(irq, &ic->fiq_aff[fiq]->aff);
-			break;
-		default:
-			irq_set_percpu_devid(irq);
-			break;
-		}
-
+		irq_set_percpu_devid(irq);
 		irq_domain_set_info(id, irq, hw, &fiq_chip, id->host_data,
 				    handle_percpu_devid_irq, NULL, NULL);
 	}
+
+	return 0;
+}
+
+static int aic_irq_get_fwspec_info(struct irq_fwspec *fwspec, struct irq_fwspec_info *info)
+{
+	const struct cpumask *mask;
+	u32 intid;
+
+	info->flags = 0;
+	info->affinity = NULL;
+
+	if (fwspec->param[0] != AIC_FIQ)
+		return 0;
+
+	if (fwspec->param_count == 3)
+		intid = fwspec->param[1];
+	else
+		intid = fwspec->param[2];
+
+	if (aic_irqc->fiq_aff[intid])
+		mask = &aic_irqc->fiq_aff[intid]->aff;
+	else
+		mask = cpu_possible_mask;
+
+	info->affinity = mask;
+	info->flags = IRQ_FWSPEC_INFO_AFFINITY_VALID;
 
 	return 0;
 }
@@ -721,6 +734,10 @@ static int aic_irq_domain_translate(struct irq_domain *id,
 				break;
 			}
 		}
+
+		/* Merge the two PMUs on a single interrupt */
+		if (*hwirq == AIC_CPU_PMU_E)
+			*hwirq = AIC_CPU_PMU_P;
 		break;
 	default:
 		return -EINVAL;
@@ -766,9 +783,10 @@ static void aic_irq_domain_free(struct irq_domain *domain, unsigned int virq,
 }
 
 static const struct irq_domain_ops aic_irq_domain_ops = {
-	.translate	= aic_irq_domain_translate,
-	.alloc		= aic_irq_domain_alloc,
-	.free		= aic_irq_domain_free,
+	.translate		= aic_irq_domain_translate,
+	.alloc			= aic_irq_domain_alloc,
+	.free			= aic_irq_domain_free,
+	.get_fwspec_info	= aic_irq_get_fwspec_info,
 };
 
 /*
@@ -920,7 +938,7 @@ static void build_fiq_affinity(struct aic_irq_chip *ic, struct device_node *aff)
 	if (WARN_ON(n < 0))
 		return;
 
-	ic->fiq_aff[fiq] = kzalloc(sizeof(*ic->fiq_aff[fiq]), GFP_KERNEL);
+	ic->fiq_aff[fiq] = kzalloc_obj(*ic->fiq_aff[fiq]);
 	if (!ic->fiq_aff[fiq])
 		return;
 
@@ -947,7 +965,6 @@ static void build_fiq_affinity(struct aic_irq_chip *ic, struct device_node *aff)
 
 static int __init aic_of_ic_init(struct device_node *node, struct device_node *parent)
 {
-	int ret;
 	int i, die;
 	u32 off, start_off;
 	void __iomem *regs;
@@ -959,7 +976,7 @@ static int __init aic_of_ic_init(struct device_node *node, struct device_node *p
 	if (WARN_ON(!regs))
 		return -EIO;
 
-	irqc = kzalloc(sizeof(*irqc), GFP_KERNEL);
+	irqc = kzalloc_obj(*irqc);
 	if (!irqc) {
 		iounmap(regs);
 		return -ENOMEM;
@@ -991,24 +1008,11 @@ static int __init aic_of_ic_init(struct device_node *node, struct device_node *p
 
 		break;
 	}
-	case 3:
-		/* read offsets from device tree for aic version 3 */
-		/* extint-baseaddress? */
-		ret = of_property_read_u32(node, "config-offset", &irqc->info.irq_cfg);
-		if (ret < 0)
-			return ret;
-		ret = of_property_read_u32(node, "cap0-offset", &irqc->info.cap0_off);
-		if (ret < 0)
-			return ret;
-		ret = of_property_read_u32(node, "maxnumirq-offset", &irqc->info.maxnumirq_off);
-		if (ret < 0)
-			return ret;
-		fallthrough;
-	case 2: {
+	case 2 ... 3: {
 		u32 info1, info3;
 
-		info1 = aic_ic_read(irqc, irqc->info.cap0_off);
-		info3 = aic_ic_read(irqc, irqc->info.maxnumirq_off);
+		info1 = aic_ic_read(irqc, AIC2_INFO1);
+		info3 = aic_ic_read(irqc, AIC2_INFO3);
 
 		irqc->nr_irq = FIELD_GET(AIC2_INFO1_NR_IRQ, info1);
 		irqc->max_irq = FIELD_GET(AIC2_INFO3_MAX_IRQ, info3);
@@ -1129,4 +1133,4 @@ err_unmap:
 
 IRQCHIP_DECLARE(apple_aic, "apple,aic", aic_of_ic_init);
 IRQCHIP_DECLARE(apple_aic2, "apple,aic2", aic_of_ic_init);
-IRQCHIP_DECLARE(apple_aic3, "apple,aic3", aic_of_ic_init);
+IRQCHIP_DECLARE(apple_aic3, "apple,t8122-aic3", aic_of_ic_init);

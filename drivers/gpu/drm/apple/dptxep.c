@@ -193,15 +193,15 @@ dptxport_call_get_drive_settings(struct apple_epic_service *service,
 	 * retcode appears to be lane count, seeing 2 for USB-C dp alt mode
 	 * with lanes splitted for DP/USB3.
 	 */
-	if (reply->retcode != dptx->lane_count)
+	if (cpu_to_le32(reply->retcode) != dptx->lane_count)
 		dev_err(service->ep->dcp->dev,
 			"get_drive_settings: unexpected retcode %d\n",
 			reply->retcode);
 
-	reply->retcode = dptx->lane_count;
-	reply->unk5 = dptx->drive_settings[0];
-	reply->unk6 = 0;
-	reply->unk7 = dptx->drive_settings[1];
+	reply->retcode = cpu_to_le32(dptx->lane_count);
+	reply->unk5 = cpu_to_le32(dptx->drive_settings[0]);
+	reply->unk6 = cpu_to_le32(0);
+	reply->unk7 = cpu_to_le32(dptx->drive_settings[1]);
 
 	return 0;
 }
@@ -225,8 +225,8 @@ dptxport_call_set_drive_settings(struct apple_epic_service *service,
 		 request->unk1, request->unk2, request->unk3, request->unk4,
 		 request->unk5, request->unk6, request->unk7);
 
-	dptx->drive_settings[0] = reply->unk5;
-	dptx->drive_settings[1] = reply->unk7;
+	dptx->drive_settings[0] = cpu_to_le32(reply->unk5);
+	dptx->drive_settings[1] = cpu_to_le32(reply->unk7);
 
 	return 0;
 }
@@ -296,7 +296,7 @@ static int dptxport_call_set_active_lane_count(struct apple_epic_service *servic
 	if (data_size < sizeof(*request))
 		return -1;
 
-	u64 lane_count = cpu_to_le64(request->lane_count);
+	u64 lane_count = le64_to_cpu(request->lane_count);
 
 	if (dptx->lane_count < lane_count)
 		dev_err(dcp->dev, "set_active_lane_count: unexpected lane "
@@ -479,7 +479,9 @@ dptxport_call_activate(struct apple_epic_service *service,
 	const struct apple_dcp *dcp = service->ep->dcp;
 
 	// TODO: hack, use phy_set_mode to select the correct DCP(EXT) input
-	phy_set_mode_ext(dptx->atcphy, PHY_MODE_DP, dcp->index);
+	// for standalone phy (i.e. not atc phy).
+	if (!dcp->typec_mux)
+		phy_set_mode_ext(dptx->atcphy, PHY_MODE_DP, dcp->index);
 
 	memcpy(reply, data, min(reply_size, data_size));
 	if (reply_size >= 4)

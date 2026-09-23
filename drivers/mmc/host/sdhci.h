@@ -537,8 +537,6 @@ struct sdhci_host {
 /* Issue CMD and DATA reset together */
 #define SDHCI_QUIRK2_ISSUE_CMD_DAT_RESET_TOGETHER	(1<<19)
 
-#define SDHCI_QUIRK2_BROKEN_UHS2			(1<<27)
-
 	int irq;		/* Device IRQ */
 	void __iomem *ioaddr;	/* Mapped address */
 	phys_addr_t mapbase;	/* physical address base */
@@ -882,6 +880,13 @@ int sdhci_suspend_host(struct sdhci_host *host);
 int sdhci_resume_host(struct sdhci_host *host);
 void sdhci_runtime_suspend_host(struct sdhci_host *host);
 void sdhci_runtime_resume_host(struct sdhci_host *host, int soft_reset);
+#else
+static inline bool sdhci_enable_irq_wakeups(struct sdhci_host *host) { return false; }
+static inline void sdhci_disable_irq_wakeups(struct sdhci_host *host) {}
+static inline int sdhci_suspend_host(struct sdhci_host *host) { return -EOPNOTSUPP; }
+static inline int sdhci_resume_host(struct sdhci_host *host) { return -EOPNOTSUPP; }
+static inline void sdhci_runtime_suspend_host(struct sdhci_host *host) {}
+static inline void sdhci_runtime_resume_host(struct sdhci_host *host, int soft_reset) {}
 #endif
 
 void sdhci_cqe_enable(struct mmc_host *mmc);

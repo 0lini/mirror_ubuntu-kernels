@@ -10,8 +10,8 @@ Build-Depends:
  bc <!stage1>,
  bindgen:native [amd64 arm64 armhf ppc64el riscv64 s390x],
  bison <!stage1>,
- bpftool:native <!stage1> <cross>,
- clang-19:native [amd64 arm64 armhf ppc64el riscv64 s390x],
+ bpftool:native [amd64 arm64 armhf ppc64el riscv64 s390x] <!stage1 cross>,
+ clang-21:native [amd64 arm64 armhf ppc64el riscv64 s390x],
  cpio,
  curl <!stage1>,
  debhelper-compat (= 10),
@@ -22,6 +22,7 @@ Build-Depends:
  java-common <!stage1>,
  kmod <!stage1>,
  libaudit-dev <!stage1>,
+ libbpf-dev <!stage1>,
  libcap-dev <!stage1>,
  libdebuginfod-dev [amd64 arm64 armhf ppc64el s390x riscv64] <!stage1>,
  libdw-dev <!stage1>,
@@ -29,6 +30,8 @@ Build-Depends:
  libiberty-dev <!stage1>,
  liblzma-dev <!stage1>,
  libnewt-dev <!stage1>,
+ libnl-3-dev,
+ libnl-genl-3-dev,
  libnuma-dev [amd64 arm64 ppc64el s390x] <!stage1>,
  libpci-dev <!stage1>,
  libssl-dev <!stage1>,
@@ -38,6 +41,7 @@ Build-Depends:
  libtracefs-dev [amd64 arm64 armhf ppc64el s390x riscv64] <!stage1>,
  libudev-dev <!stage1>,
  libunwind8-dev [amd64 arm64 armhf ppc64el] <!stage1>,
+ llvm-21-dev,
  makedumpfile:native [amd64] <!stage1>,
  openssl <!stage1>,
  pahole (>= 1.29-2ubuntu2) [amd64 arm64 armhf ppc64el s390x riscv64] | dwarves (>= 1.21) [amd64 arm64 armhf ppc64el s390x riscv64] <!stage1>,
@@ -58,7 +62,7 @@ Build-Depends-Indep:
  python3-docutils <!stage1>,
  sharutils <!stage1>,
  xmlto <!stage1>,
-Vcs-Git: git://git.launchpad.net/~ubuntu-asahi/+git/linux-asahi-arm -b asahi-arm-6.12
+Vcs-Git: git://git.launchpad.net/~ubuntu-asahi/+git/linux-asahi-arm -b asahi-arm-7.0
 XS-Testsuite: autopkgtest
 #XS-Testsuite-Depends: gcc-4.7 binutils
 

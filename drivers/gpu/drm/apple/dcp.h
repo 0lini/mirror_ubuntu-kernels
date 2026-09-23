@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only OR MIT
-/* Copyright 2021 Alyssa Rosenzweig <alyssa@rosenzweig.io> */
+/* Copyright 2021 Alyssa Rosenzweig */
 
 #ifndef __APPLE_DCP_H__
 #define __APPLE_DCP_H__
@@ -34,6 +34,7 @@ void dcp_poweron(struct platform_device *pdev);
 int dcp_set_crc(struct drm_crtc *crtc, bool enabled);
 int dcp_crtc_atomic_check(struct drm_crtc *crtc, struct drm_atomic_state *state);
 int dcp_get_connector_type(struct platform_device *pdev);
+bool dcp_fw_compat_is_12_x(struct platform_device *pdev);
 void dcp_link(struct platform_device *pdev, struct apple_crtc *apple,
 	      struct apple_connector *connector);
 int dcp_start(struct platform_device *pdev);
@@ -67,6 +68,9 @@ int ibootep_init(struct apple_dcp *dcp);
 int dpavservep_init(struct apple_dcp *dcp);
 int avep_init(struct apple_dcp *dcp);
 
+
+void __init dcp_register(void);
+void __exit dcp_unregister(void);
 
 void __init dcp_audio_register(void);
 void __exit dcp_audio_unregister(void);

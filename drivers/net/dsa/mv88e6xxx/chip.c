@@ -2024,7 +2024,7 @@ static int mv88e6xxx_mst_get(struct mv88e6xxx_chip *chip, struct net_device *br,
 	if (err)
 		goto err;
 
-	mst = kzalloc(sizeof(*mst), GFP_KERNEL);
+	mst = kzalloc_obj(*mst);
 	if (!mst) {
 		err = -ENOMEM;
 		goto err;
@@ -3945,6 +3945,8 @@ static void mv88e6xxx_teardown(struct dsa_switch *ds)
 	mv88e6xxx_teardown_devlink_params(ds);
 	dsa_devlink_resources_unregister(ds);
 	mv88e6xxx_teardown_devlink_regions_global(ds);
+	mv88e6xxx_hwtstamp_free(chip);
+	mv88e6xxx_ptp_free(chip);
 	mv88e6xxx_mdios_unregister(chip);
 }
 
@@ -4085,7 +4087,7 @@ unlock:
 	mv88e6xxx_reg_unlock(chip);
 
 	if (err)
-		goto out_mdios;
+		goto out_hwtstamp;
 
 	/* Have to be called without holding the register lock, since
 	 * they take the devlink lock, and we later take the locks in
@@ -4094,7 +4096,7 @@ unlock:
 	 */
 	err = mv88e6xxx_setup_devlink_resources(ds);
 	if (err)
-		goto out_mdios;
+		goto out_hwtstamp;
 
 	err = mv88e6xxx_setup_devlink_params(ds);
 	if (err)
@@ -4110,7 +4112,9 @@ out_params:
 	mv88e6xxx_teardown_devlink_params(ds);
 out_resources:
 	dsa_devlink_resources_unregister(ds);
-out_mdios:
+out_hwtstamp:
+	mv88e6xxx_hwtstamp_free(chip);
+	mv88e6xxx_ptp_free(chip);
 	mv88e6xxx_mdios_unregister(chip);
 
 	return err;
@@ -5066,7 +5070,7 @@ static const struct mv88e6xxx_ops mv88e6250_ops = {
 	.vtu_getnext = mv88e6185_g1_vtu_getnext,
 	.vtu_loadpurge = mv88e6185_g1_vtu_loadpurge,
 	.avb_ops = &mv88e6352_avb_ops,
-	.ptp_ops = &mv88e6250_ptp_ops,
+	.ptp_ops = &mv88e6352_ptp_ops,
 	.phylink_get_caps = mv88e6250_phylink_get_caps,
 	.set_max_frame_size = mv88e6185_g1_set_max_frame_size,
 };
@@ -7415,11 +7419,6 @@ static void mv88e6xxx_remove(struct mdio_device *mdiodev)
 		return;
 
 	chip = ds->priv;
-
-	if (chip->info->ptp_support) {
-		mv88e6xxx_hwtstamp_free(chip);
-		mv88e6xxx_ptp_free(chip);
-	}
 
 	mv88e6xxx_unregister_switch(chip);
 

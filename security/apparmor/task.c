@@ -301,7 +301,7 @@ int aa_may_ptrace(const struct cred *tracer_cred, struct aa_label *tracer,
 					    xrequest, &sa));
 }
 
-static const char* get_current_exe_path(char *buffer, int buffer_size)
+static const char *get_current_exe_path(char *buffer, int buffer_size)
 {
 	struct file *exe_file;
 	struct path p;
@@ -313,7 +313,7 @@ static const char* get_current_exe_path(char *buffer, int buffer_size)
 	p = exe_file->f_path;
 	path_get(&p);
 
-	if(aa_path_name(&p, FLAG_VIEW_SUBNS , buffer, &path_str, NULL, NULL))
+	if (aa_path_name(&p, FLAG_VIEW_SUBNS, buffer, &path_str, NULL, NULL))
 		return ERR_PTR(-ENOMEM);
 
 	fput(exe_file);
@@ -334,7 +334,6 @@ static void audit_ns_cb(struct audit_buffer *ab, void *va)
 
 	if (ad->denied & AA_USERNS_CREATE)
 		audit_log_format(ab, " denied=\"userns_create\"");
-
 	if (ad->peer) {
 		audit_log_format(ab, " target=");
 		aa_label_xaudit(ab, labels_ns(ad->subj_label), ad->peer,
@@ -343,9 +342,8 @@ static void audit_ns_cb(struct audit_buffer *ab, void *va)
 		audit_log_format(ab, " target=");
 		audit_log_untrustedstring(ab, ad->ns.target);
 	}
-
 	buffer = aa_get_buffer(false);
-	if(!buffer)
+	if (!buffer)
 		return; // OOM
 	path = get_current_exe_path(buffer, aa_g_path_max);
 	if (!IS_ERR(path))
@@ -504,6 +502,11 @@ hard_coded:
 	if (error) {
 		aa_put_label(new);
 		return ERR_PTR(error);
+	} else if (!new) {
+		/* would only happen if complain mode changed error,
+		 * which should not happen.
+		 */
+		return ERR_PTR(ad->error);
 	}
 	return new;
 }

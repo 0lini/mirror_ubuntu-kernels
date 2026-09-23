@@ -2,7 +2,13 @@
 
 //! Miscellaneous utility functions
 
-use core::ops::{Add, BitAnd, Div, Not, Sub};
+use core::ops::{
+    Add,
+    BitAnd,
+    Div,
+    Not,
+    Sub, //
+};
 use kernel::prelude::*;
 
 /// Aligns an integer type to a power of two.

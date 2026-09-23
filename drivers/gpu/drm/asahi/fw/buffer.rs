@@ -4,7 +4,11 @@
 
 use super::types::*;
 use super::workqueue;
-use crate::{default_zeroed, no_debug, trivial_gpustruct};
+use crate::{
+    default_zeroed,
+    no_debug,
+    trivial_gpustruct, //
+};
 use kernel::sync::Arc;
 
 pub(crate) mod raw {
